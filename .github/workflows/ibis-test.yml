@@ -1,12 +1,6 @@
 name: Ibis Tests
 
-on:
-  workflow_call:
-    inputs:
-      spark_version:
-        description: Spark version to use
-        type: string
-        default: "4.0.0"
+on: [push, pull_request]
 
 jobs:
   setup:
