@@ -19,14 +19,12 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Setup Protobuf Compiler
+        uses: arduino/setup-protoc@v3
+
       - name: Clone IBIS
         run: |
           git clone https://github.com/ibis-project/testing-data.git opt/ibis-testing-data
-
-      - name: protobuf
-        run: |
-          apt update
-          apt install -y protobuf-compiler
 
       - name: Install Hatch and Maturin
         run: |
