@@ -47,7 +47,12 @@ jobs:
 
       - name: Run Spark Connect Server
         run: |
-          nohup hatch run test-ibis:scripts/spark-tests/run-server.sh > /dev/null 2>&1 &
+          mkdir -p tmp/spark-tests/server-log
+          nohup hatch run test-ibis:scripts/spark-tests/run-server.sh \
+            > tmp/spark-tests/server-log/server.log 2>&1 &
+          echo "Server starting... logs at tmp/spark-tests/server-log/server.log"
+          sleep 2
+          tail -n 20 tmp/spark-tests/server-log/server.log || true
 
       - name: Wait for Spark Connect Server to Start
         run: |
