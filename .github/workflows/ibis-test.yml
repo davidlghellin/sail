@@ -63,11 +63,9 @@ jobs:
           scripts/spark-tests/wait-for-server.sh
 
       - name: Run Ibis Tests
-        timeout-minutes: 5
-        env:
-          SPARK_REMOTE: "sc://localhost:50051"
+        timeout-minutes: 10
         run: |
-          hatch run -e test-ibis scripts/spark-tests/run-tests.sh
+          hatch run test-ibis:env SPARK_REMOTE="sc://localhost:50051" scripts/spark-tests/run-tests.sh
 
       - name: Shutdown Spark Connect Server
         if: always()
