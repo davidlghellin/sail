@@ -1,0 +1,92 @@
+name: Ibis Tests
+
+on: [push]
+
+jobs:
+  setup:
+    name: Setup
+    runs-on: ubuntu-latest
+
+    env:
+      # Set the Hatch environment for `hatch run` commands.
+      HATCH_ENV: "test-ibis"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: "corretto"
+          java-version: "17"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Setup Protobuf Compiler
+        uses: arduino/setup-protoc@v3
+
+      - name: Clone IBIS
+        run: |
+          git clone https://github.com/ibis-project/testing-data.git opt/ibis-testing-data
+
+      - name: Install Hatch and Maturin
+        run: |
+          pip install hatch maturin
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable
+
+      - name: Build native extension (editable)
+        run: |
+          hatch run maturin develop
+          hatch run maturin build
+
+      - name: Install grpc_health_probe
+        run: |
+          wget -q -O /usr/local/bin/grpc_health_probe "https://github.com/grpc-ecosystem/grpc-health-probe/releases/download/v0.4.26/grpc_health_probe-linux-amd64"
+          chmod +x /usr/local/bin/grpc_health_probe
+          grpc_health_probe -version
+
+      - name: Run Spark Connect Server
+        run: |
+          mkdir -p tmp/spark-tests/server-log
+          nohup hatch run test-ibis:scripts/spark-tests/run-server.sh \
+            > tmp/spark-tests/server-log/server.log 2>&1 &
+          echo "Server starting... logs at tmp/spark-tests/server-log/server.log"
+          sleep 2
+          tail -n 20 tmp/spark-tests/server-log/server.log || true
+
+      - name: Wait for Spark Connect Server to Start
+        run: |
+          scripts/spark-tests/wait-for-server.sh
+
+      - name: Run Ibis Tests
+        timeout-minutes: 10
+        run: |
+          hatch run test-ibis:env SPARK_REMOTE="sc://localhost:50051" scripts/spark-tests/run-tests.sh || true
+
+      - name: Shutdown Spark Connect Server
+        if: always()
+        run: |
+          SAIL_PIDS=$(pgrep -f "sail spark server" || echo "")
+          if [ -n "$SAIL_PIDS" ]; then
+            echo "Found sail server processes: $SAIL_PIDS"
+            kill -INT $SAIL_PIDS 2>/dev/null || true
+            for i in {1..30}; do
+              if ! pgrep -f "sail spark server" > /dev/null; then
+                echo "Sail server stopped gracefully"
+                break
+              fi
+              sleep 1
+            done
+            REMAINING_PIDS=$(pgrep -f "sail spark server" || echo "")
+            if [ -n "$REMAINING_PIDS" ]; then
+              echo "Force killing remaining processes: $REMAINING_PIDS"
+              kill -KILL $REMAINING_PIDS 2>/dev/null || true
+            fi
+          else
+            echo "No sail server processes found"
+          fi
+          sleep 5
