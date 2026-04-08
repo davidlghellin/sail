@@ -928,3 +928,353 @@ Feature: Variant type functions (parse_json, is_variant_null, variant_get)
       Then query result
         | result |
         | null   |
+
+  Rule: try_parse_json
+
+    Scenario: try_parse_json valid JSON integer
+      When query
+        """
+        SELECT variant_get(try_parse_json('42'), '$', 'int') AS result
+        """
+      Then query result
+        | result |
+        | 42     |
+
+    Scenario: try_parse_json valid JSON string
+      When query
+        """
+        SELECT variant_get(try_parse_json('"hello"'), '$', 'string') AS result
+        """
+      Then query result
+        | result |
+        | hello  |
+
+    Scenario: try_parse_json valid JSON object
+      When query
+        """
+        SELECT variant_get(try_parse_json('{"a":1}'), '$.a', 'int') AS result
+        """
+      Then query result
+        | result |
+        | 1      |
+
+    Scenario: try_parse_json invalid JSON returns NULL
+      When query
+        """
+        SELECT try_parse_json('not json') AS result
+        """
+      Then query result
+        | result |
+        | NULL   |
+
+    Scenario: try_parse_json empty string returns NULL
+      When query
+        """
+        SELECT try_parse_json('') AS result
+        """
+      Then query result
+        | result |
+        | NULL   |
+
+    Scenario: try_parse_json NULL input returns NULL
+      When query
+        """
+        SELECT try_parse_json(NULL) AS result
+        """
+      Then query result
+        | result |
+        | NULL   |
+
+    Scenario: try_parse_json valid JSON null
+      When query
+        """
+        SELECT is_variant_null(try_parse_json('null')) AS result
+        """
+      Then query result
+        | result |
+        | true   |
+
+    Scenario: try_parse_json valid JSON array
+      When query
+        """
+        SELECT variant_get(try_parse_json('[1,2,3]'), '$[0]', 'int') AS result
+        """
+      Then query result
+        | result |
+        | 1      |
+
+    Scenario: try_parse_json multi-row with invalid
+      When query
+        """
+        SELECT try_parse_json(v) AS result
+        FROM VALUES ('42'), ('bad json'), ('null'), ('{"a":1}') AS t(v)
+        """
+      Then query result
+        | result  |
+        | 42      |
+        | NULL    |
+        | null    |
+        | {"a":1} |
+
+    Scenario: try_parse_json trailing garbage parses valid prefix
+      When query
+        """
+        SELECT try_parse_json('42 extra') AS result
+        """
+      Then query result
+        | result |
+        | 42     |
+
+  Rule: schema_of_variant
+
+    Scenario: schema_of_variant integer
+      When query
+        """
+        SELECT schema_of_variant(parse_json('42')) AS result
+        """
+      Then query result
+        | result |
+        | BIGINT |
+
+    Scenario: schema_of_variant string
+      When query
+        """
+        SELECT schema_of_variant(parse_json('"hello"')) AS result
+        """
+      Then query result
+        | result |
+        | STRING |
+
+    Scenario: schema_of_variant boolean
+      When query
+        """
+        SELECT schema_of_variant(parse_json('true')) AS result
+        """
+      Then query result
+        | result  |
+        | BOOLEAN |
+
+    # parquet-variant-json parses 3.14 as f64 (DOUBLE) instead of Decimal like Spark
+    @sail-bug
+    Scenario: schema_of_variant double
+      When query
+        """
+        SELECT schema_of_variant(parse_json('3.14')) AS result
+        """
+      Then query result
+        | result       |
+        | DECIMAL(3,2) |
+
+    Scenario: schema_of_variant null
+      When query
+        """
+        SELECT schema_of_variant(parse_json('null')) AS result
+        """
+      Then query result
+        | result |
+        | VOID   |
+
+    Scenario: schema_of_variant simple object
+      When query
+        """
+        SELECT schema_of_variant(parse_json('{"a":1}')) AS result
+        """
+      Then query result
+        | result            |
+        | OBJECT<a: BIGINT> |
+
+    Scenario: schema_of_variant array of integers
+      When query
+        """
+        SELECT schema_of_variant(parse_json('[1,2,3]')) AS result
+        """
+      Then query result
+        | result         |
+        | ARRAY<BIGINT>  |
+
+    Scenario: schema_of_variant empty object
+      When query
+        """
+        SELECT schema_of_variant(parse_json('{}')) AS result
+        """
+      Then query result
+        | result   |
+        | OBJECT<> |
+
+    Scenario: schema_of_variant empty array
+      When query
+        """
+        SELECT schema_of_variant(parse_json('[]')) AS result
+        """
+      Then query result
+        | result       |
+        | ARRAY<VOID>  |
+
+    Scenario: schema_of_variant nested object
+      When query
+        """
+        SELECT schema_of_variant(parse_json('{"a":{"b":1}}')) AS result
+        """
+      Then query result
+        | result                       |
+        | OBJECT<a: OBJECT<b: BIGINT>> |
+
+    Scenario: schema_of_variant SQL NULL returns NULL
+      When query
+        """
+        SELECT schema_of_variant(parse_json(NULL)) AS result
+        """
+      Then query result
+        | result |
+        | NULL   |
+
+    Scenario: schema_of_variant mixed array
+      When query
+        """
+        SELECT schema_of_variant(parse_json('[1, "hello", true]')) AS result
+        """
+      Then query result
+        | result                               |
+        | ARRAY<VARIANT>                       |
+
+    Scenario: schema_of_variant object with multiple fields
+      When query
+        """
+        SELECT schema_of_variant(parse_json('{"name":"sail","age":5,"active":true}')) AS result
+        """
+      Then query result
+        | result                                          |
+        | OBJECT<active: BOOLEAN, age: BIGINT, name: STRING> |
+
+  Rule: schema_of_variant_agg
+
+    Scenario: schema_of_variant_agg uniform types
+      When query
+        """
+        SELECT schema_of_variant_agg(parse_json(v)) AS result
+        FROM VALUES ('1'), ('2'), ('3') AS t(v)
+        """
+      Then query result
+        | result |
+        | BIGINT |
+
+    Scenario: schema_of_variant_agg mixed scalars
+      When query
+        """
+        SELECT schema_of_variant_agg(parse_json(v)) AS result
+        FROM VALUES ('1'), ('"hello"'), ('true') AS t(v)
+        """
+      Then query result
+        | result  |
+        | VARIANT |
+
+    Scenario: schema_of_variant_agg objects merge fields
+      When query
+        """
+        SELECT schema_of_variant_agg(parse_json(v)) AS result
+        FROM VALUES ('{"a":1}'), ('{"a":2,"b":"x"}') AS t(v)
+        """
+      Then query result
+        | result                         |
+        | OBJECT<a: BIGINT, b: STRING>   |
+
+    Scenario: schema_of_variant_agg with nulls
+      When query
+        """
+        SELECT schema_of_variant_agg(parse_json(v)) AS result
+        FROM VALUES ('42'), ('null'), ('99') AS t(v)
+        """
+      Then query result
+        | result |
+        | BIGINT |
+
+  Rule: to_variant_object
+
+    Scenario: to_variant_object simple struct
+      When query
+        """
+        SELECT to_json(to_variant_object(named_struct('a', 1, 'b', 'hello'))) AS result
+        """
+      Then query result
+        | result            |
+        | {"a":1,"b":"hello"} |
+
+    Scenario: to_variant_object single field
+      When query
+        """
+        SELECT to_json(to_variant_object(named_struct('x', 42))) AS result
+        """
+      Then query result
+        | result    |
+        | {"x":42}  |
+
+    # cast_to_variant from parquet-variant-compute omits NULL struct fields
+    @sail-bug
+    Scenario: to_variant_object with null field
+      When query
+        """
+        SELECT to_json(to_variant_object(named_struct('a', 1, 'b', CAST(NULL AS STRING)))) AS result
+        """
+      Then query result
+        | result           |
+        | {"a":1,"b":null} |
+
+    Scenario: to_variant_object with boolean
+      When query
+        """
+        SELECT to_json(to_variant_object(named_struct('flag', true, 'count', 5))) AS result
+        """
+      Then query result
+        | result                    |
+        | {"count":5,"flag":true}   |
+
+    Scenario: to_variant_object NULL input returns NULL
+      When query
+        """
+        SELECT to_variant_object(CAST(NULL AS STRUCT<a: INT>)) AS result
+        """
+      Then query result
+        | result |
+        | NULL   |
+
+    Scenario: to_variant_object with array input
+      When query
+        """
+        SELECT to_json(to_variant_object(array(1, 2, 3))) AS result
+        """
+      Then query result
+        | result  |
+        | [1,2,3] |
+
+    Scenario: to_variant_object with map input
+      When query
+        """
+        SELECT to_json(to_variant_object(map('x', 1, 'y', 2))) AS result
+        """
+      Then query result
+        | result          |
+        | {"x":1,"y":2}   |
+
+    Scenario: to_variant_object with array of structs
+      When query
+        """
+        SELECT to_json(to_variant_object(array(named_struct('a', 1)))) AS result
+        """
+      Then query result
+        | result      |
+        | [{"a":1}]   |
+
+    Scenario: to_variant_object rejects primitive int
+      When query
+        """
+        SELECT to_variant_object(42) AS result
+        """
+      Then query error (DATATYPE_MISMATCH|cannot cast|VARIANT)
+
+    Scenario: to_variant_object rejects string
+      When query
+        """
+        SELECT to_variant_object('hello') AS result
+        """
+      Then query error (DATATYPE_MISMATCH|cannot cast|VARIANT)
+
