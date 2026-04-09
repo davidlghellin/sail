@@ -1277,4 +1277,3 @@ Feature: Variant type functions (parse_json, is_variant_null, variant_get)
         SELECT to_variant_object('hello') AS result
         """
       Then query error (DATATYPE_MISMATCH|cannot cast|VARIANT)
-
