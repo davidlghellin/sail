@@ -4,4 +4,5 @@ pub mod spark_array_compact;
 pub mod spark_array_filter_expr;
 pub mod spark_array_item_with_position;
 pub mod spark_array_min_max;
+pub mod spark_array_transform_expr;
 pub mod spark_sequence;

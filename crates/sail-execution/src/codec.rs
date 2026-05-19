@@ -122,6 +122,7 @@ use sail_function::scalar::array::spark_array_compact::SparkArrayCompact;
 use sail_function::scalar::array::spark_array_filter_expr::SparkArrayFilterExpr;
 use sail_function::scalar::array::spark_array_item_with_position::ArrayItemWithPosition;
 use sail_function::scalar::array::spark_array_min_max::{ArrayMax, ArrayMin};
+use sail_function::scalar::array::spark_array_transform_expr::SparkArrayTransformExpr;
 use sail_function::scalar::array::spark_sequence::SparkSequence;
 use sail_function::scalar::collection::spark_concat::SparkConcat;
 use sail_function::scalar::collection::spark_reverse::SparkReverse;
@@ -2174,6 +2175,35 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
                 );
                 return Ok(Arc::new(ScalarUDF::from(udf)));
             }
+            UdfKind::SparkArrayTransform(gen::SparkArrayTransformUdf {
+                lambda_expr,
+                element_type,
+                return_element_type,
+                column_name,
+                index_column_name,
+                outer_columns,
+            }) => {
+                let lambda_expr = self.try_decode_logical_expr(&lambda_expr)?;
+                let element_type = self.try_decode_data_type(&element_type)?;
+                let return_element_type = self.try_decode_data_type(&return_element_type)?;
+                let outer_columns = outer_columns
+                    .into_iter()
+                    .map(|col| {
+                        let data_type = self.try_decode_data_type(&col.data_type)?;
+                        Ok((col.name, data_type))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+
+                let udf = SparkArrayTransformExpr::new(
+                    lambda_expr,
+                    element_type,
+                    return_element_type,
+                    column_name,
+                    index_column_name,
+                    outer_columns,
+                );
+                return Ok(Arc::new(ScalarUDF::from(udf)));
+            }
         };
         match name {
             "array_item_with_position" => {
@@ -2586,6 +2616,31 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
             UdfKind::SparkArrayFilter(gen::SparkArrayFilterUdf {
                 lambda_expr,
                 element_type,
+                column_name,
+                index_column_name,
+                outer_columns,
+            })
+        } else if let Some(func) = node.inner().downcast_ref::<SparkArrayTransformExpr>() {
+            let lambda_expr = self.try_encode_logical_expr(func.logical_expr())?;
+            let element_type = self.try_encode_data_type(func.element_type())?;
+            let return_element_type = self.try_encode_data_type(func.return_element_type())?;
+            let column_name = func.column_name().to_string();
+            let index_column_name = func.index_column_name().map(|s| s.to_string());
+            let outer_columns = func
+                .outer_columns()
+                .iter()
+                .map(|(name, dt)| {
+                    let data_type = self.try_encode_data_type(dt)?;
+                    Ok(gen::OuterColumnRef {
+                        name: name.clone(),
+                        data_type,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            UdfKind::SparkArrayTransform(gen::SparkArrayTransformUdf {
+                lambda_expr,
+                element_type,
+                return_element_type,
                 column_name,
                 index_column_name,
                 outer_columns,

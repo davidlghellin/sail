@@ -8,9 +8,11 @@ use datafusion_expr::{lit, Expr, ScalarUDF};
 use datafusion_functions_nested::expr_fn;
 use sail_common_datafusion::utils::items::ItemTaker;
 use sail_function::higher_order::spark_array_filter::SparkArrayFilter;
+use sail_function::higher_order::spark_array_transform::SparkArrayTransform;
 use sail_function::scalar::array::spark_array_filter_expr::{
     build_batch_schema, SparkArrayFilterExpr,
 };
+use sail_function::scalar::array::spark_array_transform_expr::SparkArrayTransformExpr;
 
 use crate::error::{PlanError, PlanResult};
 use crate::function::common::{
@@ -195,6 +197,96 @@ fn replace_synthetic_columns_with_lambda_vars(
     Ok(result.data)
 }
 
+/// Handler for transform(array, lambda) - maps each element of the array using a lambda.
+///
+/// Uses DataFusion's native HigherOrderUDF when no outer-column captures are needed and
+/// only 1 lambda param (element only). Falls back to SparkArrayTransformExpr (ScalarUDF)
+/// for 2-param lambdas (element + index) or outer-column captures.
+fn transform_lambda(input: LambdaFunctionInput) -> PlanResult<Expr> {
+    let LambdaFunctionInput {
+        array_expr,
+        resolved_lambda,
+        element_type,
+        element_column_name,
+        element_var_name,
+        index_column_name,
+        index_var_name,
+        outer_columns,
+        outer_column_exprs,
+        function_context,
+    } = input;
+
+    // Native HigherOrderUDF path — 1-param lambda, no outer column captures.
+    // Same restriction as filter: 2-param lambdas use the fallback due to a DF bug in
+    // LambdaExpr::new that misaligns the evaluation batch when the index param is used.
+    if element_type != DataType::Null && index_var_name.is_none() {
+        let body = replace_synthetic_columns_with_lambda_vars(
+            resolved_lambda,
+            &element_column_name,
+            &element_var_name,
+            &element_type,
+            index_column_name.as_deref(),
+            index_var_name.as_deref(),
+        )?;
+
+        let mut params = vec![element_var_name];
+        if let Some(idx_name) = index_var_name {
+            params.push(idx_name);
+        }
+
+        let lambda_expr = Expr::Lambda(Lambda::new(params, body));
+        return Ok(Expr::HigherOrderFunction(HigherOrderFunction::new(
+            Arc::new(SparkArrayTransform::new()),
+            vec![array_expr, lambda_expr],
+        )));
+    }
+
+    // Fallback: ScalarUDF path for 2-param lambdas (element + index) and outer captures.
+    // The return element type is not available at planning time here, so we use Null as
+    // placeholder; the actual type will be resolved by DataFusion's type coercion based
+    // on the physical expression result type.
+    let schema = build_batch_schema(
+        &element_column_name,
+        &element_type,
+        index_column_name.as_deref(),
+        &outer_columns,
+    );
+    let df_schema = DFSchema::try_from(Arc::clone(&schema)).map_err(|e| {
+        PlanError::internal(format!("transform lambda: failed to build schema: {e}"))
+    })?;
+    let physical_expr = function_context
+        .session_context
+        .state()
+        .create_physical_expr(resolved_lambda.clone(), &df_schema)
+        .map_err(|e| PlanError::internal(format!("transform lambda: compile failed: {e}")))?;
+
+    // Infer the return element type from the physical expression.
+    let return_schema = Arc::clone(&schema);
+    let df_return_schema = DFSchema::try_from(return_schema)
+        .map_err(|e| PlanError::internal(format!("transform lambda: return schema failed: {e}")))?;
+    let return_element_type = physical_expr
+        .data_type(df_return_schema.inner())
+        .unwrap_or(DataType::Null);
+
+    let mut udf_args = vec![array_expr];
+    udf_args.extend(outer_column_exprs);
+
+    let transform_udf = SparkArrayTransformExpr::with_precompiled(
+        resolved_lambda,
+        physical_expr,
+        element_type,
+        return_element_type,
+        element_column_name,
+        index_column_name,
+        outer_columns,
+    );
+
+    Ok(Expr::ScalarFunction(expr::ScalarFunction {
+        func: Arc::new(ScalarUDF::from(transform_udf)),
+        args: udf_args,
+    }))
+}
+
 /// Higher-order (lambda) function handlers.
 /// These are called when a lambda IS present in the function call.
 pub fn list_built_in_higher_order_functions() -> Vec<(&'static str, LambdaFunction)> {
@@ -209,7 +301,7 @@ pub fn list_built_in_higher_order_functions() -> Vec<(&'static str, LambdaFuncti
         ("map_filter", F::unknown("map_filter")),
         ("map_zip_with", F::unknown("map_zip_with")),
         ("reduce", F::unknown("reduce")),
-        ("transform", F::unknown("transform")),
+        ("transform", F::custom(transform_lambda)),
         ("transform_keys", F::unknown("transform_keys")),
         ("transform_values", F::unknown("transform_values")),
         ("zip_with", F::unknown("zip_with")),
