@@ -199,8 +199,12 @@ impl ScalarFunctionBuilder {
 /// lambda variable resolution and external column detection before calling the handler.
 pub struct LambdaFunctionInput<'a> {
     pub array_expr: expr::Expr,
+    /// Additional resolved non-lambda args beyond the first array (e.g. second array for zip_with).
+    pub additional_array_exprs: Vec<expr::Expr>,
     pub resolved_lambda: expr::Expr,
     pub element_type: DataType,
+    /// Element types of additional arrays (one per entry in `additional_array_exprs`).
+    pub additional_element_types: Vec<DataType>,
     pub element_column_name: String,
     pub element_var_name: String,
     pub index_column_name: Option<String>,

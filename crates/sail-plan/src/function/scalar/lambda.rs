@@ -1,13 +1,14 @@
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::{DataType, Field};
-use datafusion_common::tree_node::{Transformed, TreeNode};
+use datafusion_common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion_common::{Column, DFSchema, ScalarValue};
-use datafusion_expr::expr::{self, HigherOrderFunction, Lambda, LambdaVariable};
+use datafusion_expr::expr::{self, Case, HigherOrderFunction, Lambda, LambdaVariable};
 use datafusion_expr::{lit, Expr, ScalarUDF};
 use datafusion_functions_nested::expr_fn;
 use sail_common_datafusion::utils::items::ItemTaker;
 use sail_function::higher_order::spark_array_filter::SparkArrayFilter;
+use sail_function::higher_order::spark_array_zip_with::SparkZipWith;
 use sail_function::scalar::array::spark_array_filter_expr::{
     build_batch_schema, SparkArrayFilterExpr,
 };
@@ -90,6 +91,7 @@ fn filter_lambda(input: LambdaFunctionInput) -> PlanResult<Expr> {
         outer_columns,
         outer_column_exprs,
         function_context,
+        ..
     } = input;
 
     // Native HigherOrderUDF path — element type is known, and at most 1 lambda param.
@@ -105,6 +107,7 @@ fn filter_lambda(input: LambdaFunctionInput) -> PlanResult<Expr> {
             &element_type,
             index_column_name.as_deref(),
             index_var_name.as_deref(),
+            None,
         )?;
 
         let mut params = vec![element_var_name];
@@ -158,6 +161,10 @@ fn filter_lambda(input: LambdaFunctionInput) -> PlanResult<Expr> {
 }
 
 /// Walk `expr` replacing `Column(synthetic_id)` references with `LambdaVariable` nodes.
+///
+/// `idx_type`: when `Some(t)`, the index/second param uses type `t` (nullable=true).
+/// When `None`, the index param defaults to `Int64` (nullable=false), matching the filter
+/// element-index convention.
 fn replace_synthetic_columns_with_lambda_vars(
     expr: Expr,
     elem_id: &str,
@@ -165,9 +172,13 @@ fn replace_synthetic_columns_with_lambda_vars(
     elem_type: &DataType,
     idx_id: Option<&str>,
     idx_name: Option<&str>,
+    idx_type: Option<DataType>,
 ) -> PlanResult<Expr> {
     let elem_field = Arc::new(Field::new(elem_name, elem_type.clone(), true));
-    let idx_field = idx_name.map(|name| Arc::new(Field::new(name, DataType::Int64, false)));
+    let idx_field = idx_name.map(|name| match &idx_type {
+        Some(t) => Arc::new(Field::new(name, t.clone(), true)),
+        None => Arc::new(Field::new(name, DataType::Int64, false)),
+    });
 
     let result = expr.transform(|e| match &e {
         Expr::Column(Column {
@@ -182,17 +193,102 @@ fn replace_synthetic_columns_with_lambda_vars(
             relation: None,
             ..
         }) if idx_id.is_some_and(|id| name.as_str() == id) => {
-            let field = idx_field
-                .as_ref()
-                .and_then(|_f| idx_name.map(|n| Arc::new(Field::new(n, DataType::Int64, false))));
             Ok(Transformed::yes(Expr::LambdaVariable(LambdaVariable::new(
                 idx_name.unwrap_or("i").to_string(),
-                field,
+                idx_field.as_ref().map(Arc::clone),
             ))))
         }
         _ => Ok(Transformed::no(e)),
     })?;
     Ok(result.data)
+}
+
+/// Handler for zip_with(array1, array2, lambda) — zips two arrays with NULL-padding.
+fn zip_with_lambda(input: LambdaFunctionInput) -> PlanResult<Expr> {
+    let LambdaFunctionInput {
+        array_expr,
+        additional_array_exprs,
+        resolved_lambda,
+        element_type,
+        additional_element_types,
+        element_column_name,
+        element_var_name,
+        index_column_name,
+        index_var_name,
+        ..
+    } = input;
+
+    let y_column_name = index_column_name.ok_or_else(|| {
+        PlanError::invalid("zip_with: expected two lambda parameters (x, y), missing second")
+    })?;
+    let y_var_name = index_var_name.ok_or_else(|| {
+        PlanError::invalid("zip_with: expected two lambda parameters (x, y), missing second name")
+    })?;
+    let y_type = additional_element_types
+        .into_iter()
+        .next()
+        .unwrap_or(DataType::Null);
+    let arr2_expr = additional_array_exprs
+        .into_iter()
+        .next()
+        .ok_or_else(|| PlanError::invalid("zip_with: expected a second array argument"))?;
+
+    // Detect if x (the first lambda param) appears in the body. If not, we must inject
+    // a dummy reference to work around a DataFusion LambdaExpr bug: when only y (index=1)
+    // is present, LambdaExpr remaps y to projected index 0, but the eval batch always
+    // provides params in declaration order [x_flat, y_flat], so y ends up at index 1 and
+    // the remapped body reads the wrong column.
+    let mut x_used = false;
+    let _ = resolved_lambda.apply(|e| {
+        if let Expr::Column(Column {
+            name,
+            relation: None,
+            ..
+        }) = e
+        {
+            if name.as_str() == element_column_name.as_str() {
+                x_used = true;
+                return Ok(TreeNodeRecursion::Stop);
+            }
+        }
+        Ok(TreeNodeRecursion::Continue)
+    });
+
+    let body = replace_synthetic_columns_with_lambda_vars(
+        resolved_lambda,
+        &element_column_name,
+        &element_var_name,
+        &element_type,
+        Some(&y_column_name),
+        Some(&y_var_name),
+        Some(y_type),
+    )?;
+
+    // If x was absent, wrap body in a semantically-equivalent CASE that references x.
+    // This forces x's index into used_column_indices → identity projection → no remapping.
+    // DataFusion's simplifier won't remove this: LambdaVariable is non-constant, and the
+    // same-branch CASE pattern is not one of its simplification rules.
+    let body = if !x_used {
+        let x_field = Arc::new(Field::new(&element_var_name, element_type.clone(), true));
+        let x_lv =
+            Expr::LambdaVariable(LambdaVariable::new(element_var_name.clone(), Some(x_field)));
+        Expr::Case(Case {
+            expr: None,
+            when_then_expr: vec![(
+                Box::new(Expr::IsNull(Box::new(x_lv))),
+                Box::new(body.clone()),
+            )],
+            else_expr: Some(Box::new(body)),
+        })
+    } else {
+        body
+    };
+
+    let lambda_expr = Expr::Lambda(Lambda::new(vec![element_var_name, y_var_name], body));
+    Ok(Expr::HigherOrderFunction(HigherOrderFunction::new(
+        Arc::new(SparkZipWith::new()),
+        vec![array_expr, arr2_expr, lambda_expr],
+    )))
 }
 
 /// Higher-order (lambda) function handlers.
@@ -212,6 +308,6 @@ pub fn list_built_in_higher_order_functions() -> Vec<(&'static str, LambdaFuncti
         ("transform", F::unknown("transform")),
         ("transform_keys", F::unknown("transform_keys")),
         ("transform_values", F::unknown("transform_values")),
-        ("zip_with", F::unknown("zip_with")),
+        ("zip_with", F::custom(zip_with_lambda)),
     ]
 }

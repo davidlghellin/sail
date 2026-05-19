@@ -89,12 +89,19 @@ impl PlanResolver<'_> {
                     arguments: lambda_args,
                 } = &arguments[arguments.len() - 1]
                 {
-                    // Resolve only the array argument (first arg)
-                    let array_expr = self
-                        .resolve_expression(arguments[0].clone(), schema, state)
-                        .await?;
+                    // Resolve all non-lambda arguments (everything before the final lambda).
+                    let num_array_args = arguments.len() - 1;
+                    let mut resolved_all: Vec<expr::Expr> = Vec::with_capacity(num_array_args);
+                    for arg in arguments.iter().take(num_array_args) {
+                        let e = self.resolve_expression(arg.clone(), schema, state).await?;
+                        resolved_all.push(e);
+                    }
 
-                    // Get the element type from the array expression
+                    // First arg is always the primary array.
+                    let array_expr = resolved_all[0].clone();
+                    let additional_array_exprs = resolved_all[1..].to_vec();
+
+                    // Get the element type from the first array expression.
                     let array_type = array_expr.get_type(schema.as_ref())?;
                     let element_type = match &array_type {
                         DataType::List(field) | DataType::LargeList(field) => {
@@ -107,6 +114,19 @@ impl PlanResolver<'_> {
                             )))
                         }
                     };
+
+                    // Collect element types for additional array args (best-effort; non-arrays skipped).
+                    let additional_element_types: Vec<DataType> = additional_array_exprs
+                        .iter()
+                        .filter_map(|e| {
+                            e.get_type(schema.as_ref()).ok().and_then(|t| match t {
+                                DataType::List(f) | DataType::LargeList(f) => {
+                                    Some(f.data_type().clone())
+                                }
+                                _ => None,
+                            })
+                        })
+                        .collect();
 
                     // Extract lambda variable names - supports (element) or (element, index)
                     let var_names: Vec<String> = lambda_args
@@ -133,12 +153,17 @@ impl PlanResolver<'_> {
                         index_field_id.as_deref(),
                     )?;
 
-                    // Create schema with element column (and optionally index column)
+                    // Create schema with element column (and optionally index/second column).
+                    // When a second array is present (e.g. zip_with), use its element type for
+                    // the second lambda param instead of a hardcoded Int32.
                     let mut lambda_schema_fields =
                         vec![Field::new(&element_field_id, element_type.clone(), true)];
                     if let Some(ref idx_id) = index_field_id {
-                        // Use Int32 to match common array element types for better type compatibility
-                        lambda_schema_fields.push(Field::new(idx_id, DataType::Int32, false));
+                        let idx_type = additional_element_types
+                            .first()
+                            .cloned()
+                            .unwrap_or(DataType::Int32);
+                        lambda_schema_fields.push(Field::new(idx_id, idx_type, true));
                     }
                     let lambda_only_schema =
                         DFSchema::try_from(Arc::new(Schema::new(lambda_schema_fields.clone())))?;
@@ -226,8 +251,10 @@ impl PlanResolver<'_> {
                     // Create the lambda function input and call the handler
                     let lambda_input = LambdaFunctionInput {
                         array_expr,
+                        additional_array_exprs,
                         resolved_lambda,
                         element_type,
+                        additional_element_types,
                         element_column_name: element_field_id,
                         element_var_name,
                         index_column_name: index_field_id,

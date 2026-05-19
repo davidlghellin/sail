@@ -41,7 +41,7 @@
         }
       },
       "output": {
-        "failure": "not implemented: lambda function: aggregate"
+        "failure": "not implemented: lambda function"
       }
     },
     {
@@ -520,7 +520,7 @@
         }
       },
       "output": {
-        "failure": "not implemented: lambda function: reduce"
+        "failure": "not implemented: lambda function"
       }
     },
     {
@@ -706,7 +706,7 @@
         }
       },
       "output": {
-        "failure": "not implemented: lambda function: zip_with"
+        "success": "ok"
       }
     },
     {
@@ -732,7 +732,7 @@
         }
       },
       "output": {
-        "failure": "not implemented: lambda function: zip_with"
+        "success": "ok"
       }
     },
     {
@@ -774,7 +774,7 @@
         }
       },
       "output": {
-        "failure": "not implemented: lambda function: zip_with"
+        "success": "ok"
       }
     }
   ]
