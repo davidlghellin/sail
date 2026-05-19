@@ -7,6 +7,7 @@ use datafusion_expr::expr::{self, HigherOrderFunction, Lambda, LambdaVariable};
 use datafusion_expr::{lit, Expr, ScalarUDF};
 use datafusion_functions_nested::expr_fn;
 use sail_common_datafusion::utils::items::ItemTaker;
+use sail_function::higher_order::spark_array_exists_forall::{SparkExists, SparkForall};
 use sail_function::higher_order::spark_array_filter::SparkArrayFilter;
 use sail_function::scalar::array::spark_array_filter_expr::{
     build_batch_schema, SparkArrayFilterExpr,
@@ -195,6 +196,72 @@ fn replace_synthetic_columns_with_lambda_vars(
     Ok(result.data)
 }
 
+fn exists_lambda(input: LambdaFunctionInput) -> PlanResult<Expr> {
+    let LambdaFunctionInput {
+        array_expr,
+        resolved_lambda,
+        element_type,
+        element_column_name,
+        element_var_name,
+        index_var_name,
+        ..
+    } = input;
+
+    if index_var_name.is_some() {
+        return Err(PlanError::invalid(
+            "exists does not support a two-parameter lambda",
+        ));
+    }
+
+    let body = replace_synthetic_columns_with_lambda_vars(
+        resolved_lambda,
+        &element_column_name,
+        &element_var_name,
+        &element_type,
+        None,
+        None,
+    )?;
+
+    let lambda_expr = Expr::Lambda(Lambda::new(vec![element_var_name], body));
+    Ok(Expr::HigherOrderFunction(HigherOrderFunction::new(
+        Arc::new(SparkExists::new()),
+        vec![array_expr, lambda_expr],
+    )))
+}
+
+fn forall_lambda(input: LambdaFunctionInput) -> PlanResult<Expr> {
+    let LambdaFunctionInput {
+        array_expr,
+        resolved_lambda,
+        element_type,
+        element_column_name,
+        element_var_name,
+        index_var_name,
+        ..
+    } = input;
+
+    if index_var_name.is_some() {
+        return Err(PlanError::invalid(
+            "forall does not support a two-parameter lambda",
+        ));
+    }
+
+    let body = replace_synthetic_columns_with_lambda_vars(
+        resolved_lambda,
+        &element_column_name,
+        &element_var_name,
+        &element_type,
+        None,
+        None,
+    )?;
+
+    let lambda_expr = Expr::Lambda(Lambda::new(vec![element_var_name], body));
+    Ok(Expr::HigherOrderFunction(HigherOrderFunction::new(
+        Arc::new(SparkForall::new()),
+        vec![array_expr, lambda_expr],
+    )))
+}
+
 /// Higher-order (lambda) function handlers.
 /// These are called when a lambda IS present in the function call.
 pub fn list_built_in_higher_order_functions() -> Vec<(&'static str, LambdaFunction)> {
@@ -203,9 +270,9 @@ pub fn list_built_in_higher_order_functions() -> Vec<(&'static str, LambdaFuncti
     vec![
         ("aggregate", F::unknown("aggregate")),
         ("array_sort", F::unknown("array_sort with comparator")),
-        ("exists", F::unknown("exists")),
+        ("exists", F::custom(exists_lambda)),
         ("filter", F::custom(filter_lambda)),
-        ("forall", F::unknown("forall")),
+        ("forall", F::custom(forall_lambda)),
         ("map_filter", F::unknown("map_filter")),
         ("map_zip_with", F::unknown("map_zip_with")),
         ("reduce", F::unknown("reduce")),

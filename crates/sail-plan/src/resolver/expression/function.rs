@@ -663,9 +663,20 @@ fn transform_lambda_variables_with_index(
             is_metadata_column,
         } => {
             let var_name: Vec<String> = name.clone().into();
-            if let Some(field_id) = get_field_id(&var_name) {
+            // Only check the first part so that dotted access like `s.a` replaces
+            // just `s` with the synthetic field ID, preserving `.a` as a field path.
+            let first_only = &var_name[..var_name.len().min(1)];
+            if let Some(field_id) = get_field_id(first_only) {
+                let new_name = if var_name.len() <= 1 {
+                    spec::ObjectName::bare(field_id)
+                } else {
+                    std::iter::once(field_id.to_string())
+                        .chain(var_name[1..].iter().cloned())
+                        .collect::<Vec<String>>()
+                        .into()
+                };
                 Ok(spec::Expr::UnresolvedAttribute {
-                    name: spec::ObjectName::bare(field_id),
+                    name: new_name,
                     plan_id: *plan_id,
                     is_metadata_column: *is_metadata_column,
                 })
