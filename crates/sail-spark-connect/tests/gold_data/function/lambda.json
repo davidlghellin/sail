@@ -19,7 +19,7 @@
         }
       },
       "output": {
-        "failure": "not implemented: lambda function: aggregate"
+        "success": "ok"
       }
     },
     {
@@ -41,7 +41,7 @@
         }
       },
       "output": {
-        "failure": "not implemented: lambda function: aggregate"
+        "success": "ok"
       }
     },
     {
@@ -498,7 +498,7 @@
         }
       },
       "output": {
-        "failure": "not implemented: lambda function: reduce"
+        "success": "ok"
       }
     },
     {
@@ -520,7 +520,7 @@
         }
       },
       "output": {
-        "failure": "not implemented: lambda function: reduce"
+        "success": "ok"
       }
     },
     {

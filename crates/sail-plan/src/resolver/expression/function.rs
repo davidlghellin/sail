@@ -4,7 +4,7 @@ use std::sync::Arc;
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion_common::tree_node::{Transformed, TreeNode};
 use datafusion_common::{Column, DFSchema, DFSchemaRef};
-use datafusion_expr::expr::ScalarFunction;
+use datafusion_expr::expr::{HigherOrderFunction, Lambda, LambdaVariable, ScalarFunction};
 use datafusion_expr::utils::{expand_qualified_wildcard, expand_wildcard, expr_to_columns};
 use datafusion_expr::{expr, EmptyRelation, Expr, ExprSchemable, LogicalPlan};
 use sail_catalog::manager::CatalogManager;
@@ -12,6 +12,7 @@ use sail_common::spec;
 use sail_common_datafusion::extension::SessionExtensionAccessor;
 use sail_common_datafusion::session::plan::PlanService;
 use sail_common_datafusion::utils::items::ItemTaker;
+use sail_function::higher_order::spark_array_reduce::SparkArrayReduce;
 use sail_function::scalar::multi_expr::MultiExpr;
 use sail_python_udf::udf::pyspark_unresolved_udf::PySparkUnresolvedUDF;
 
@@ -78,6 +79,17 @@ impl PlanResolver<'_> {
         }
 
         let canonical_function_name = function_name.to_ascii_lowercase();
+
+        // Special handling for reduce/aggregate: 2-lambda HOFs with (array, zero, merge[, finish])
+        // Must be intercepted before the single-lambda handler below.
+        if (canonical_function_name == "reduce" || canonical_function_name == "aggregate")
+            && arguments.len() >= 3
+            && matches!(&arguments[2], spec::Expr::LambdaFunction { .. })
+        {
+            return self
+                .resolve_reduce_aggregate(&canonical_function_name, arguments, schema, state)
+                .await;
+        }
 
         // Special handling for higher-order functions with lambdas
         // These need to intercept the lambda BEFORE normal argument resolution
@@ -796,5 +808,217 @@ fn transform_lambda_variables_with_index(
         spec::Expr::Literal(_) => Ok(expr.clone()),
 
         _ => Ok(expr.clone()),
+    }
+}
+
+/// Replace `Expr::Column(synthetic_id)` with `Expr::LambdaVariable` for each binding.
+///
+/// `vars`: slice of `(synthetic_id, var_name, var_type)` — synthetic IDs produced by
+/// `register_synthetic_field()` are matched against unqualified column names in `expr`.
+fn replace_hof_lambda_vars(expr: Expr, vars: &[(&str, &str, &DataType)]) -> PlanResult<Expr> {
+    let fields: Vec<Arc<Field>> = vars
+        .iter()
+        .map(|(_, name, ty)| Arc::new(Field::new(*name, (*ty).clone(), true)))
+        .collect();
+
+    let result = expr.transform(|e| {
+        if let Expr::Column(Column {
+            name,
+            relation: None,
+            ..
+        }) = &e
+        {
+            for (i, (field_id, var_name, _)) in vars.iter().enumerate() {
+                if name.as_str() == *field_id {
+                    return Ok(Transformed::yes(Expr::LambdaVariable(LambdaVariable::new(
+                        var_name.to_string(),
+                        Some(Arc::clone(&fields[i])),
+                    ))));
+                }
+            }
+        }
+        Ok(Transformed::no(e))
+    })?;
+    Ok(result.data)
+}
+
+impl PlanResolver<'_> {
+    /// Resolve `reduce(array, zero, merge_lambda[, finish_lambda])` /
+    /// `aggregate(array, zero, merge_lambda[, finish_lambda])` into an
+    /// `Expr::HigherOrderFunction(SparkArrayReduce, ...)` node.
+    ///
+    /// Called before the generic single-lambda handler so that both lambdas
+    /// are resolved correctly.
+    async fn resolve_reduce_aggregate(
+        &self,
+        func_name: &str,
+        arguments: Vec<spec::Expr>,
+        schema: &DFSchemaRef,
+        state: &mut PlanResolverState,
+    ) -> PlanResult<NamedExpr> {
+        // arguments: [array, zero, merge_lambda, (optional) finish_lambda]
+        if arguments.len() < 3 {
+            return Err(PlanError::invalid(format!(
+                "{func_name}() requires at least 3 arguments"
+            )));
+        }
+        let array_spec = arguments[0].clone();
+        let zero_spec = arguments[1].clone();
+        let merge_spec = arguments[2].clone();
+        let finish_spec = if arguments.len() >= 4 {
+            Some(arguments[3].clone())
+        } else {
+            None
+        };
+
+        // 1. Resolve array expression and get element type
+        let array_expr = self.resolve_expression(array_spec, schema, state).await?;
+        let array_type = array_expr.get_type(schema.as_ref())?;
+        let element_type = match &array_type {
+            DataType::List(f) | DataType::LargeList(f) => f.data_type().clone(),
+            other => {
+                return Err(PlanError::invalid(format!(
+                    "{func_name}(): first argument must be an array type, got {other:?}"
+                )))
+            }
+        };
+
+        // 2. Resolve zero expression and get initial accumulator type
+        let zero_expr = self.resolve_expression(zero_spec, schema, state).await?;
+        let zero_type = zero_expr.get_type(schema.as_ref())?;
+
+        // 3. Resolve merge lambda: (acc: zero_type, x: element_type) -> output
+        let (merge_lambda_expr, merge_output_type) = self
+            .resolve_hof_lambda(
+                &merge_spec,
+                &[("acc", &zero_type), ("x", &element_type)],
+                schema,
+                state,
+            )
+            .await?;
+
+        let mut hof_args = vec![array_expr, zero_expr, merge_lambda_expr];
+
+        // 4. Resolve finish lambda if present: (acc: merge_output_type) -> output
+        if let Some(finish_spec) = finish_spec {
+            let (finish_lambda_expr, _) = self
+                .resolve_hof_lambda(&finish_spec, &[("acc", &merge_output_type)], schema, state)
+                .await?;
+            hof_args.push(finish_lambda_expr);
+        }
+
+        Ok(NamedExpr::new(
+            vec![format!("{func_name}(<lambda>)")],
+            Expr::HigherOrderFunction(HigherOrderFunction::new(
+                Arc::new(SparkArrayReduce::new()),
+                hof_args,
+            )),
+        ))
+    }
+
+    /// Resolve a single lambda spec into an `Expr::Lambda` with `LambdaVariable` bodies.
+    ///
+    /// `params`: ordered `(var_name, var_type)` pairs matching the lambda's declared parameters.
+    ///
+    /// Returns `(Expr::Lambda, output_type)`.
+    async fn resolve_hof_lambda(
+        &self,
+        lambda_spec: &spec::Expr,
+        params: &[(&str, &DataType)],
+        outer_schema: &DFSchemaRef,
+        state: &mut PlanResolverState,
+    ) -> PlanResult<(Expr, DataType)> {
+        let spec::Expr::LambdaFunction {
+            function: body_spec,
+            arguments: lambda_args,
+        } = lambda_spec
+        else {
+            return Err(PlanError::invalid(
+                "expected a lambda function expression".to_string(),
+            ));
+        };
+
+        // Extract the variable names as declared in the lambda spec
+        let var_names: Vec<String> = lambda_args
+            .iter()
+            .flat_map(|v| {
+                let names: Vec<String> = v.name.clone().into();
+                names
+            })
+            .collect();
+
+        // Register synthetic field IDs for each lambda parameter
+        let field_ids: Vec<String> = params
+            .iter()
+            .map(|_| state.register_synthetic_field())
+            .collect();
+
+        // Transform the body: replace lambda variable names with synthetic field IDs
+        // Reuse the existing transform_lambda_variables_with_index which handles 1-2 params.
+        let transformed_body = transform_lambda_variables_with_index(
+            body_spec,
+            &var_names,
+            field_ids.first().map_or("__acc__", |s| s.as_str()),
+            field_ids.get(1).map(|s| s.as_str()),
+        )?;
+
+        // Build a schema for the lambda parameters
+        let lambda_fields: Vec<Field> = field_ids
+            .iter()
+            .zip(params.iter())
+            .map(|(id, (_, ty))| Field::new(id.as_str(), (*ty).clone(), true))
+            .collect();
+        let lambda_schema =
+            DFSchema::try_from(Arc::new(Schema::new(lambda_fields))).map_err(|e| {
+                PlanError::internal(format!("resolve_hof_lambda: schema build failed: {e}"))
+            })?;
+
+        // Combined schema: lambda params shadow outer columns with same name
+        let mut combined_schema = lambda_schema.clone();
+        combined_schema.merge(outer_schema.as_ref());
+        let combined_schema = Arc::new(combined_schema);
+
+        // Resolve the transformed body against the combined schema
+        let resolved_body = self
+            .resolve_expression(transformed_body, &combined_schema, state)
+            .await?;
+
+        // Get the output type of the lambda body
+        let output_type = resolved_body.get_type(&combined_schema).map_err(|e| {
+            PlanError::internal(format!(
+                "resolve_hof_lambda: failed to infer lambda output type: {e}"
+            ))
+        })?;
+
+        // Remove table qualifiers from outer column references so DataFusion can
+        // match them to the outer batch at execution time.
+        let resolved_body = resolved_body
+            .transform(|e| match &e {
+                Expr::Column(col) if col.relation.is_some() => Ok(Transformed::yes(Expr::Column(
+                    Column::new_unqualified(&col.name),
+                ))),
+                _ => Ok(Transformed::no(e)),
+            })?
+            .data;
+
+        // Replace synthetic column IDs with LambdaVariable nodes
+        let var_bindings: Vec<(&str, &str, &DataType)> = field_ids
+            .iter()
+            .zip(params.iter())
+            .map(|(id, (name, ty))| (id.as_str(), *name, *ty))
+            .collect();
+        let lambda_body = replace_hof_lambda_vars(resolved_body, &var_bindings)?;
+
+        // Build the Expr::Lambda; use only as many param names as the lambda declared
+        let declared_count = var_names.len().min(params.len());
+        let declared_names: Vec<String> = params[..declared_count]
+            .iter()
+            .map(|(name, _)| name.to_string())
+            .collect();
+
+        Ok((
+            Expr::Lambda(Lambda::new(declared_names, lambda_body)),
+            output_type,
+        ))
     }
 }
