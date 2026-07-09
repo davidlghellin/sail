@@ -278,8 +278,36 @@ impl<'a> TypeCoercionRewriter<'a> {
     ) -> Result<(Expr, Expr)> {
         let left_data_type = left.get_type(left_schema)?;
         let right_data_type = right.get_type(right_schema)?;
-        let (left_type, right_type) =
+        // Spark narrows an integer *literal* that meets a decimal in `+`, `-`, `*`
+        // to the literal's minimal-precision decimal *before* computing the
+        // arithmetic type, whereas DataFusion widens it to the type-based
+        // `Decimal(10, 0)`. Narrowing first makes the result type match Spark
+        // (e.g. `dec(10,2) * 3` => `decimal(12,2)` not `decimal(21,2)`;
+        // `dec(10,2) + 3` => `decimal(11,2)` not `decimal(13,2)`).
+        let (left_data_type, right_data_type) =
+            if matches!(op, Operator::Plus | Operator::Minus | Operator::Multiply) {
+                let left_narrowed =
+                    spark_decimal_literal_datatype(&left, &right_data_type).unwrap_or(left_data_type);
+                let right_narrowed = spark_decimal_literal_datatype(&right, &left_narrowed)
+                    .unwrap_or(right_data_type);
+                (left_narrowed, right_narrowed)
+            } else {
+                (left_data_type, right_data_type)
+            };
+        let (mut left_type, mut right_type) =
             BinaryTypeCoercer::new(&left_data_type, &op, &right_data_type).get_input_types()?;
+        // Spark promotes FLOAT/DOUBLE combined with DECIMAL in arithmetic to DOUBLE,
+        // whereas DataFusion keeps FLOAT (giving a FLOAT result). Ref:
+        // https://github.com/apache/spark/blob/v4.1.1/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/analysis/DecimalPrecision.scala
+        // (`(l: DecimalType, r: FractionalType)` / `(l: FractionalType, r: DecimalType)` => `DoubleType`).
+        if matches!(
+            op,
+            Operator::Plus | Operator::Minus | Operator::Multiply | Operator::Divide
+        ) && is_float_decimal_pair(&left_data_type, &right_data_type)
+        {
+            left_type = DataType::Float64;
+            right_type = DataType::Float64;
+        }
         let left_cast_ok = can_cast_types(&left_data_type, &left_type);
         let right_cast_ok = can_cast_types(&right_data_type, &right_type);
 
@@ -403,6 +431,70 @@ impl<'a> TypeCoercionRewriter<'a> {
 
         Ok(e)
     }
+}
+
+/// Spark narrows an integer *literal* combined with a decimal in arithmetic to the
+/// literal's minimal-precision decimal (`DecimalType.fromLiteral`), while DataFusion
+/// widens it to the type-based `Decimal(10, 0)`. Returns the narrowed decimal type for
+/// `expr` when it is an integer literal and the other operand (`other_type`) is a
+/// decimal; otherwise `None` (leave the type unchanged).
+///
+/// [CREDIT]: https://github.com/apache/spark/blob/v4.1.1/sql/catalyst/src/main/scala/org/apache/spark/sql/types/DecimalType.scala
+/// (`fromLiteral` -> `fromBigDecimal`: `DecimalType(max(precision, scale), scale)`; for an
+/// integer `scale = 0`, so the result is `Decimal(digit_count, 0)`).
+fn spark_decimal_literal_datatype(expr: &Expr, other_type: &DataType) -> Option<DataType> {
+    let is_256 = match other_type {
+        DataType::Decimal128(_, _) => false,
+        DataType::Decimal256(_, _) => true,
+        _ => return None,
+    };
+    let value = match expr {
+        Expr::Literal(scalar, _) => scalar_integer_value(scalar)?,
+        _ => return None,
+    };
+    let precision = integer_digit_count(value);
+    Some(if is_256 {
+        DataType::Decimal256(precision, 0)
+    } else {
+        DataType::Decimal128(precision, 0)
+    })
+}
+
+/// True when one operand is a floating-point type and the other a decimal (in
+/// either order) — the pair Spark promotes to `DoubleType` in arithmetic.
+fn is_float_decimal_pair(a: &DataType, b: &DataType) -> bool {
+    fn is_decimal(dt: &DataType) -> bool {
+        matches!(dt, DataType::Decimal128(_, _) | DataType::Decimal256(_, _))
+    }
+    (a.is_floating() && is_decimal(b)) || (is_decimal(a) && b.is_floating())
+}
+
+fn scalar_integer_value(scalar: &ScalarValue) -> Option<i128> {
+    Some(match scalar {
+        ScalarValue::Int8(Some(v)) => i128::from(*v),
+        ScalarValue::Int16(Some(v)) => i128::from(*v),
+        ScalarValue::Int32(Some(v)) => i128::from(*v),
+        ScalarValue::Int64(Some(v)) => i128::from(*v),
+        ScalarValue::UInt8(Some(v)) => i128::from(*v),
+        ScalarValue::UInt16(Some(v)) => i128::from(*v),
+        ScalarValue::UInt32(Some(v)) => i128::from(*v),
+        ScalarValue::UInt64(Some(v)) => i128::from(*v),
+        _ => return None,
+    })
+}
+
+/// Number of base-10 digits in `value` (sign ignored), minimum 1.
+fn integer_digit_count(value: i128) -> u8 {
+    let mut n = value.unsigned_abs();
+    let mut digits = 0u8;
+    loop {
+        digits += 1;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    digits
 }
 
 impl TreeNodeRewriter for TypeCoercionRewriter<'_> {
@@ -1907,6 +1999,78 @@ mod test {
             plan,
             @r"
         Projection: CAST(a AS Decimal128(24, 4)) IN ([CAST(Int32(1) AS Decimal128(24, 4)), CAST(Int8(4) AS Decimal128(24, 4)), CAST(Int64(8) AS Decimal128(24, 4))])
+          EmptyRelation: rows=0
+        ")
+    }
+
+    #[test]
+    fn decimal_times_integer_literal_narrows() -> Result<()> {
+        // Spark: `dec(10,2) * 3` narrows literal `3` to `Decimal(1,0)`, so the
+        // result is `decimal(12,2)`. DataFusion would widen `3` to `Decimal(10,0)`
+        // (=> `decimal(21,2)`).
+        let expr = col("a") * lit(3_i32);
+        let empty = empty_with_type(DataType::Decimal128(10, 2));
+        let plan = LogicalPlan::Projection(Projection::try_new(vec![expr], empty)?);
+        assert_analyzed_plan_eq!(
+            plan,
+            @r"
+        Projection: a * CAST(Int32(3) AS Decimal128(1, 0))
+          EmptyRelation: rows=0
+        ")
+    }
+
+    #[test]
+    fn decimal_plus_integer_literal_narrows() -> Result<()> {
+        // Spark: `dec(10,2) + 3` narrows literal `3` to `Decimal(1,0)`, so the
+        // result is `decimal(11,2)` (DataFusion would give `decimal(13,2)`).
+        let expr = col("a") + lit(3_i32);
+        let empty = empty_with_type(DataType::Decimal128(10, 2));
+        let plan = LogicalPlan::Projection(Projection::try_new(vec![expr], empty)?);
+        assert_analyzed_plan_eq!(
+            plan,
+            @r"
+        Projection: a + CAST(Int32(3) AS Decimal128(1, 0))
+          EmptyRelation: rows=0
+        ")
+    }
+
+    #[test]
+    fn decimal_times_multidigit_literal_narrows() -> Result<()> {
+        // Literal `100` narrows to `Decimal(3,0)` => `dec(10,2) * 100` = `decimal(14,2)`.
+        let expr = col("a") * lit(100_i64);
+        let empty = empty_with_type(DataType::Decimal128(10, 2));
+        let plan = LogicalPlan::Projection(Projection::try_new(vec![expr], empty)?);
+        assert_analyzed_plan_eq!(
+            plan,
+            @r"
+        Projection: a * CAST(Int64(100) AS Decimal128(3, 0))
+          EmptyRelation: rows=0
+        ")
+    }
+
+    #[test]
+    fn float32_times_decimal_promotes_to_double() -> Result<()> {
+        // Spark promotes FLOAT * DECIMAL to DOUBLE; DataFusion would keep FLOAT.
+        let expr = col("a") * lit(2.0_f32);
+        let empty = empty_with_type(DataType::Decimal128(10, 2));
+        let plan = LogicalPlan::Projection(Projection::try_new(vec![expr], empty)?);
+        assert_analyzed_plan_eq!(
+            plan,
+            @r"
+        Projection: CAST(a AS Float64) * CAST(Float32(2) AS Float64)
+          EmptyRelation: rows=0
+        ")
+    }
+
+    #[test]
+    fn double_times_decimal_stays_double() -> Result<()> {
+        let expr = col("a") * lit(2.0_f64);
+        let empty = empty_with_type(DataType::Decimal128(10, 2));
+        let plan = LogicalPlan::Projection(Projection::try_new(vec![expr], empty)?);
+        assert_analyzed_plan_eq!(
+            plan,
+            @r"
+        Projection: CAST(a AS Float64) * Float64(2)
           EmptyRelation: rows=0
         ")
     }
