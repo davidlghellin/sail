@@ -6630,6 +6630,75 @@ Feature: arithmetic operand-type REJECTION matrix (+ - * / %) vs Spark 4.2.0
         """
       Then query error (?i)cannot resolve.*VARIANT
 
+    # The VARIANT arm keys off the marker Sail puts on the storage fields, not off the struct
+    # SHAPE: a plain struct of two binary fields named `metadata` and `value` is an ordinary
+    # struct, and Spark names it as one.
+    @spark-4
+    Scenario: a struct shaped like VARIANT storage is named STRUCT, not VARIANT
+      When query
+        """
+        SELECT named_struct('metadata', CAST('m' AS BINARY), 'value', CAST('v' AS BINARY)) + 1
+        """
+      Then query error (?i)cannot resolve.*STRUCT<
+
+    # Spark back-quotes a nested field name that is not a plain identifier and doubles any
+    # back-quote inside it. Asserting the doubled form is what makes this discriminating: it
+    # fails if either the quoting or the doubling is missing.
+    Scenario: a nested field name that needs quoting is back-quoted
+      When query
+        """
+        SELECT named_struct('a`b', 1) + 1
+        """
+      Then query error (?i)cannot resolve.*STRUCT<`a``b`: INT
+
+    Scenario: a nested field name with a space is back-quoted
+      When query
+        """
+        SELECT named_struct('a b', 1) + 1
+        """
+      Then query error (?i)cannot resolve.*STRUCT<`a b`: INT
+
+    Scenario: a quoted nested field name survives inside an ARRAY
+      When query
+        """
+        SELECT array(named_struct('a b', 1)) + 1
+        """
+      Then query error (?i)cannot resolve.*ARRAY<STRUCT<`a b`: INT
+
+    Scenario: a nested STRUCT operand is named recursively
+      When query
+        """
+        SELECT named_struct('x', named_struct('y', 1)) + 1
+        """
+      Then query error (?i)cannot resolve.*STRUCT<x: STRUCT<y: INT
+
+    @spark-4
+    Scenario: a VARIANT nested inside a STRUCT is named VARIANT
+      When query
+        """
+        SELECT named_struct('v', parse_json('{"a": 1}')) + 1
+        """
+      Then query error (?i)cannot resolve.*STRUCT<v: VARIANT
+
+    # Spark carries a nested field's COMMENT into the type name. Sail drops nested field
+    # comments before the plan is built -- the metadata is already empty in `.schema` -- so
+    # there is nothing here to carry, and the gap is upstream of this message.
+    @sail-bug
+    Scenario: a nested field COMMENT is part of the type name
+      Given statement
+        """
+        DROP TABLE IF EXISTS arithmetic_operand_comment
+        """
+      And statement
+        """
+        CREATE TABLE arithmetic_operand_comment (s STRUCT<a: INT COMMENT 'hola'>) USING parquet
+        """
+      When query
+        """
+        SELECT s + 1 FROM arithmetic_operand_comment
+        """
+      Then query error (?i)cannot resolve.*COMMENT 'hola'
+
     Scenario: a BOOLEAN operand is named BOOLEAN
       When query
         """

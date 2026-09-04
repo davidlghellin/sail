@@ -8,6 +8,13 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
   # It asserts RESOLUTION ONLY and does not pin the result type: that is the coercion
   # contract, a separate concern with its own branch. Nullability is likewise out of scope.
   #
+  # Version note: the verdicts are Spark 4.2.0's, which is what Sail targets. Three cells
+  # changed in 4.1 (SPARK-52782, `BinaryArithmeticWithDatetimeResolver.scala:88`) and were
+  # measured on 4.0.1 to confirm: `NULL + ts` and `ts + NULL` are REJECTED there but resolve
+  # from 4.1 on, and `NULL + date` resolves to `date` on 4.0 versus `timestamp` from 4.1.
+  # Only a JVM oracle sweep against a pre-4.1 Spark would see the difference; the rows are
+  # left ungated because they assert resolution, not the type, and because 4.2 is the target.
+  #
   # Same 28-token alphabet as the rejection file. The 413 `@sail-bug` rows are pairs Spark
   # resolves and Sail does not; they cannot detect over-rejection (a pair Sail already
   # rejects cannot become over-rejected) but they inventory the Spark functions Sail has
@@ -2390,61 +2397,40 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | case | l | r |
         | unull % unull | NULL | NULL |
 
-  # Sail's unsigned integer widths have no Spark SQL spelling, so this cannot run against the JVM
-  # oracle -- but it is not a synthetic case. Sail WRITES unsigned columns to Parquet as real
-  # `uint8`/`uint16`/`uint32`/`uint64` (verified with `pyarrow.parquet.read_schema`) and READS
-  # them back with the unsigned Arrow type intact (`typeof` says `unsigned int`), while
-  # reporting them to the client as the Spark types `data_type_arrow.rs` maps them to:
-  # UInt8 -> BYTE, UInt16 -> SHORT, UInt32 -> INT, UInt64 -> BIGINT. ClickBench's `hits.parquet`
-  # has such a column (`EventDate` is `UInt16`), so this is a path real data takes.
+  # Sail's unsigned widths have no Spark SQL spelling, so the fixture cannot run on the JVM --
+  # but the VERDICTS below were measured against Spark 4.2.0 on an equivalent PyArrow Parquet
+  # file and match it exactly.
   #
-  # `DateAdd`/`DateSub` accept BYTE, SHORT and INT and reject BIGINT
-  # (`datetimeExpressions.scala:331,371`; they are `ExpectsInputTypes`, so nothing widens a
-  # BIGINT into range). So the offset must be judged by the Spark type the column is reported
-  # as, never by its Arrow name -- otherwise the engine refuses an offset the user sees as a
-  # plain INT. The uint32-vs-uint64 pair is the discriminating case.
+  # Spark's Parquet reader WIDENS every unsigned by one step so all values stay
+  # representable: UINT_8 -> SMALLINT, UINT_16 -> INT, UINT_32 -> BIGINT,
+  # UINT_64 -> DECIMAL(20,0). `DateAdd`/`DateSub` accept only BYTE/SHORT/INT
+  # (`datetimeExpressions.scala:331,371`), so uint8 and uint16 are valid offsets and
+  # uint32 and uint64 are not. Measured on `struct<u8:smallint,u16:int,u32:bigint,
+  # u64:decimal(20,0)>`: Spark resolves the first two and rejects the last two.
+  #
+  # Note Sail's own Arrow->Spark mapping reports the same-width signed type instead
+  # (`u32:int`), one step narrower than Spark's and lossy above 2^31. That divergence is
+  # pre-existing and lives in `data_type_arrow.rs`; the guard deliberately follows Spark's
+  # widening rather than Sail's reporting, so the accept/reject decision matches.
   @sail-only
-  Rule: an unsigned Parquet column is a date offset by the Spark type it is reported as
+  Rule: an unsigned Parquet column is a date offset only at the widths Spark accepts
 
-    Scenario: unsigned columns read from Parquet keep their reported Spark types
-      Given variable location for temporary directory unsigned_date_offset
+    Scenario Outline: date plus an unsigned Parquet column resolves: <case>
+      Given variable location for temporary directory unsigned_offset_ok
       Given final statement
         """
-        DROP TABLE IF EXISTS unsigned_offsets
+        DROP TABLE IF EXISTS unsigned_ok
         """
       Given statement template
         """
-        CREATE TABLE unsigned_offsets
+        CREATE TABLE unsigned_ok
         USING PARQUET
         LOCATION {{ location.sql }}
-        AS SELECT CAST(2 AS UINT8) AS u8, CAST(2 AS UINT16) AS u16,
-                  CAST(2 AS UINT32) AS u32, CAST(2 AS UINT64) AS u64
+        AS SELECT CAST(2 AS UINT8) AS u8, CAST(2 AS UINT16) AS u16
         """
       When query
         """
-        SELECT typeof(u8) AS a, typeof(u16) AS b, typeof(u32) AS c, typeof(u64) AS d
-        FROM unsigned_offsets
-        """
-      Then query result
-        | a               | b                | c            | d               |
-        | unsigned tinyint | unsigned smallint | unsigned int | unsigned bigint |
-
-    Scenario Outline: a date offset from an unsigned Parquet column resolves: <case>
-      Given variable location for temporary directory unsigned_offset_add
-      Given final statement
-        """
-        DROP TABLE IF EXISTS unsigned_offsets_add
-        """
-      Given statement template
-        """
-        CREATE TABLE unsigned_offsets_add
-        USING PARQUET
-        LOCATION {{ location.sql }}
-        AS SELECT CAST(2 AS UINT8) AS u8, CAST(2 AS UINT16) AS u16, CAST(2 AS UINT32) AS u32
-        """
-      When query
-        """
-        SELECT CAST(DATE'2024-01-15' + <col> AS STRING) AS r FROM unsigned_offsets_add
+        SELECT CAST(DATE'2024-01-15' + <col> AS STRING) AS r FROM unsigned_ok
         """
       Then query result
         | r          |
@@ -2454,24 +2440,28 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | case | col |
         | uint8 offset | u8 |
         | uint16 offset | u16 |
-        | uint32 offset | u32 |
 
-    # UInt64 is reported as BIGINT, which `DateAdd` does not accept.
-    Scenario: a uint64 Parquet column is rejected as a date offset, like the BIGINT it reports
+    # Spark widens these to BIGINT and DECIMAL(20,0), which `DateAdd` does not accept.
+    Scenario Outline: date plus a wider unsigned Parquet column is rejected: <case>
       Given variable location for temporary directory unsigned_offset_reject
       Given final statement
         """
-        DROP TABLE IF EXISTS unsigned_offsets_reject
+        DROP TABLE IF EXISTS unsigned_reject
         """
       Given statement template
         """
-        CREATE TABLE unsigned_offsets_reject
+        CREATE TABLE unsigned_reject
         USING PARQUET
         LOCATION {{ location.sql }}
-        AS SELECT CAST(2 AS UINT64) AS u64
+        AS SELECT CAST(2 AS UINT32) AS u32, CAST(2 AS UINT64) AS u64
         """
       When query
         """
-        SELECT DATE'2024-01-15' + u64 AS r FROM unsigned_offsets_reject
+        SELECT DATE'2024-01-15' + <col> AS r FROM unsigned_reject
         """
       Then query error (?i)cannot resolve
+
+      Examples:
+        | case | col |
+        | uint32 offset | u32 |
+        | uint64 offset | u64 |

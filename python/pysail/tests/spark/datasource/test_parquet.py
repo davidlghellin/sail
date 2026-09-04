@@ -1,13 +1,15 @@
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from pandas.testing import assert_frame_equal
+from pyspark.errors import AnalysisException
 from pyspark.sql import Row
 
+from pysail.testing.spark.utils.common import is_jvm_spark
 from pysail.testing.spark.utils.files import get_data_directory_size
 from pysail.testing.spark.utils.sql import escape_sql_identifier, escape_sql_string_literal
 
@@ -710,3 +712,56 @@ def test_parquet_read_uppercase_single_file_with_schema(spark, sample_df, tmp_pa
     df = spark.read.schema(sample_df.schema).parquet(str(upper))
     assert df.count() == sample_df.count()
     assert sorted(df.collect(), key=safe_sort_key) == sorted(sample_df.collect(), key=safe_sort_key)
+
+
+def test_parquet_arithmetic_operand_rejection(spark, tmp_path):
+    # Fixed-size binary and unsigned integers have no SQL literal spelling, so
+    # a file is the only way they reach the arithmetic operand guards.
+    path = str(tmp_path / "arithmetic_operands.parquet")
+    pq.write_table(
+        pa.table(
+            {
+                "fsb": pa.array([b"abcd"], pa.binary(4)),
+                "u8": pa.array([1], pa.uint8()),
+                "u16": pa.array([1], pa.uint16()),
+                "u32": pa.array([1], pa.uint32()),
+                "u64": pa.array([1], pa.uint64()),
+            }
+        ),
+        path,
+    )
+    spark.read.parquet(path).createOrReplaceTempView("arithmetic_operands")
+
+    # BINARY is not one of the input types any operator accepts.
+    for op in ["+", "-", "*", "/", "%"]:
+        with pytest.raises(AnalysisException, match="(?i)cannot resolve"):
+            spark.sql(f"SELECT fsb {op} 1 FROM arithmetic_operands").collect()
+
+    # `DateAdd` takes a BYTE, SHORT or INT offset (`datetimeExpressions.scala:331`).
+    # Both engines accept the two narrow widths and reject the two wide ones, by
+    # different routes: Spark reads u32 as BIGINT and rejects the width, Sail
+    # keeps it unsigned and rejects the signedness.
+    for column in ["u8", "u16"]:
+        assert spark.sql(
+            f"SELECT DATE'2024-01-01' + {column} AS r FROM arithmetic_operands"
+        ).collect() == [Row(r=date(2024, 1, 2))]
+    for column in ["u32", "u64"]:
+        with pytest.raises(AnalysisException, match="(?i)cannot resolve"):
+            spark.sql(f"SELECT DATE'2024-01-01' + {column} AS r FROM arithmetic_operands").collect()
+
+    # The same unsigned columns stay usable in ordinary numeric arithmetic.
+    assert spark.sql("SELECT u32 * 2 AS r FROM arithmetic_operands").collect() == [Row(r=2)]
+
+
+@pytest.mark.xfail(not is_jvm_spark(), strict=True, reason="Sail names the Arrow unsigned type")
+def test_parquet_unsigned_operand_is_not_named_unsigned(spark, tmp_path):
+    # Spark has no unsigned types, so `UNSIGNED INT` is a name no Spark message can carry
+    # -- and it contradicts the schema Sail itself reports for the column, which is INT.
+    # The name comes from `spark_type_name`; the mapping it disagrees with lives in
+    # `crates/sail-spark-connect/src/proto/data_type_arrow.rs`.
+    path = str(tmp_path / "unsigned_operand.parquet")
+    pq.write_table(pa.table({"u32": pa.array([1], pa.uint32())}), path)
+    spark.read.parquet(path).createOrReplaceTempView("unsigned_operand")
+    with pytest.raises(AnalysisException) as excinfo:
+        spark.sql("SELECT DATE'2024-01-01' + u32 FROM unsigned_operand").collect()
+    assert "UNSIGNED" not in str(excinfo.value)

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use datafusion::arrow::datatypes::{DataType, IntervalUnit, TimeUnit};
+use datafusion::arrow::datatypes::{DataType, Field, IntervalUnit, TimeUnit};
 use datafusion::logical_expr::expr::NullTreatment;
 use datafusion::prelude::SessionContext;
 use datafusion_common::tree_node::TreeNode;
@@ -10,8 +10,10 @@ use datafusion_expr::{
     AggregateUDF, BinaryExpr, ExprSchemable, Operator, ScalarUDF, ScalarUDFImpl, WindowFrame,
     WindowFunctionDefinition, WindowUDF, cast, expr, lit,
 };
+use sail_catalog::utils::quote_name_if_needed;
+use sail_common::spec::SAIL_SPARK_UDT_METADATA_KEY;
 use sail_common_datafusion::utils::items::ItemTaker;
-use sail_common_datafusion::variant::is_variant_storage_type;
+use sail_common_datafusion::variant::{is_marked_variant_storage_type, is_variant_storage_field};
 use sail_function::scalar::variant::spark_cast_to_variant::SparkCastToVariant;
 use sail_function::sketch::{DEFAULT_HLL_LG_CONFIG_K, DEFAULT_THETA_LG_NOM_ENTRIES};
 use sail_python_udf::udf::pyspark_batch_collector::PySparkBatchCollectorUDF;
@@ -525,6 +527,25 @@ pub fn expr_contains_spark_cast_to_variant(body: &expr::Expr) -> PlanResult<bool
     })?)
 }
 
+/// Whether the field carries Spark UDT identity. Sail stores a UDT as its STORAGE type plus
+/// this metadata key (`resolver/data_type.rs`), so a guard reading only the `DataType` judges a
+/// UDT by the type underneath it -- Spark rejects the UDT itself, whatever it is stored as.
+pub(crate) fn is_spark_udt_field(field: &Field) -> bool {
+    field.metadata().contains_key(SAIL_SPARK_UDT_METADATA_KEY)
+}
+
+/// [`spark_type_name`] for an operand whose `Field` is available. Only the field carries UDT
+/// identity and the VARIANT marker, so the bare `DataType` cannot name either.
+pub(crate) fn spark_field_type_name(field: &Field) -> String {
+    if is_spark_udt_field(field) {
+        format!("UDT(\"{}\")", spark_type_name(field.data_type()))
+    } else if is_variant_storage_field(field) {
+        "VARIANT".to_string()
+    } else {
+        spark_type_name(field.data_type())
+    }
+}
+
 /// The Spark type name (`INT`, `STRING`, `INTERVAL DAY TO SECOND`, ...), for error messages that
 /// quote operand types rather than leaking Arrow's `Debug` (`Int32`, `Utf8`, `Interval(...)`).
 pub(crate) fn spark_type_name(data_type: &DataType) -> String {
@@ -599,15 +620,17 @@ pub(crate) fn spark_type_name(data_type: &DataType) -> String {
         // named before the generic struct arm below — otherwise the message reports Sail's
         // physical shredding layout (`STRUCT<value: BINARY NOT NULL, ...>`) for a value Spark
         // simply calls "VARIANT".
-        DataType::Struct(_) if is_variant_storage_type(data_type) => "VARIANT".to_string(),
+        DataType::Struct(_) if is_marked_variant_storage_type(data_type) => "VARIANT".to_string(),
         DataType::Struct(fields) => {
             let fields = fields
                 .iter()
                 .map(|field| {
                     let nullability = if field.is_nullable() { "" } else { " NOT NULL" };
+                    // Spark back-quotes a nested field name that is not a plain
+                    // identifier, doubling any back-quote inside it.
                     format!(
                         "{}: {}{nullability}",
-                        field.name(),
+                        quote_name_if_needed(field.name()),
                         spark_type_name(field.data_type())
                     )
                 })

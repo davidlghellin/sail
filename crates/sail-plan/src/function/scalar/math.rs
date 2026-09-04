@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use datafusion::arrow::datatypes::{DataType, IntervalUnit, TimeUnit, i256};
+use datafusion::arrow::datatypes::{DataType, FieldRef, IntervalUnit, TimeUnit, i256};
 use datafusion::arrow::error::ArrowError;
 use datafusion::functions::expr_fn;
 use datafusion_common::{DFSchemaRef, ScalarValue};
@@ -38,7 +38,9 @@ use sail_function::scalar::misc::raise_error::RaiseError;
 use sail_function::scalar::spark_to_string::{SparkToLargeUtf8, SparkToUtf8, SparkToUtf8View};
 
 use crate::error::{PlanError, PlanResult};
-use crate::function::common::{ScalarFunction, ScalarFunctionInput, spark_type_name};
+use crate::function::common::{
+    ScalarFunction, ScalarFunctionInput, is_spark_udt_field, spark_field_type_name, spark_type_name,
+};
 
 fn add_day_time_interval_to_string(
     string: Expr,
@@ -89,6 +91,9 @@ fn spark_plus(input: ScalarFunctionInput) -> PlanResult<Expr> {
         Ok(arguments.one()?)
     } else {
         let (left, right) = arguments.two()?;
+        if let Some(error) = rejects_udt_operand("+", &left, &right, function_context.schema) {
+            return Err(error);
+        }
         let (left_type, right_type) = (
             left.get_type(function_context.schema),
             right.get_type(function_context.schema),
@@ -175,6 +180,9 @@ fn spark_minus(input: ScalarFunctionInput) -> PlanResult<Expr> {
         ))
     } else {
         let (left, right) = arguments.two()?;
+        if let Some(error) = rejects_udt_operand("-", &left, &right, function_context.schema) {
+            return Err(error);
+        }
         let (left_type, right_type) = (
             left.get_type(function_context.schema),
             right.get_type(function_context.schema),
@@ -232,6 +240,9 @@ fn spark_multiply(input: ScalarFunctionInput) -> PlanResult<Expr> {
     } = input;
 
     let (left, right) = arguments.two()?;
+    if let Some(error) = rejects_udt_operand("*", &left, &right, function_context.schema) {
+        return Err(error);
+    }
     let (left_type, right_type) = (
         left.get_type(function_context.schema),
         right.get_type(function_context.schema),
@@ -368,6 +379,9 @@ fn spark_divide(input: ScalarFunctionInput) -> PlanResult<Expr> {
     } = input;
 
     let (dividend, divisor) = arguments.two()?;
+    if let Some(error) = rejects_udt_operand("/", &dividend, &divisor, function_context.schema) {
+        return Err(error);
+    }
 
     let ansi_mode = function_context.plan_config.ansi_mode;
     let dividend_type = dividend.get_type(function_context.schema);
@@ -645,6 +659,9 @@ fn spark_modulo(input: ScalarFunctionInput) -> PlanResult<Expr> {
     } = input;
 
     let (dividend, divisor) = arguments.two()?;
+    if let Some(error) = rejects_udt_operand("%", &dividend, &divisor, function_context.schema) {
+        return Err(error);
+    }
 
     let ansi_mode = function_context.plan_config.ansi_mode;
     let divisor_type = divisor.get_type(function_context.schema);
@@ -860,16 +877,10 @@ pub(super) fn list_built_in_math_functions() -> Vec<(&'static str, ScalarFunctio
 /// resolve — so narrowing a guard too far turns a row of the latter red. The latter asserts
 /// resolution only, never the result type: that is the coercion contract, not this one.
 /// `Unsupported` is a type Spark never accepts in arithmetic that would otherwise compute a
-/// garbage value (boolean, binary). Note it lists `Binary`/`LargeBinary`/`BinaryView` but NOT
-/// `FixedSizeBinary`, which falls into `Other` and is deferred to DataFusion: Sail has no SQL
-/// syntax that produces a fixed-width binary column (it arrives only from an Arrow or Parquet
-/// source), so the pair is unreachable from a BDD scenario and is left unmeasured rather than
-/// rejected on an assumption. `spark_type_name` does name it BINARY, so the message is right
-/// if some other guard rejects it first. `Other` is any type outside the validated matrix
-/// (fixed-size binary, dictionary, run-end-encoded, union -- struct, list and map are
-/// `Unsupported`, and time has its own role): the guards leave those to DataFusion rather than
-/// hard-reject a
-/// pair whose behavior was never measured.
+/// garbage value: boolean and every binary width, including the fixed-size one a Parquet
+/// FIXED_LEN_BYTE_ARRAY produces. `Other` is any type outside the validated matrix (dictionary,
+/// run-end-encoded, union -- struct, list, map and time have their own roles): the guards leave
+/// those to DataFusion rather than hard-reject a pair whose behavior was never measured.
 #[derive(PartialEq, Eq, Clone, Copy)]
 enum OperandRole {
     Numeric,
@@ -918,9 +929,14 @@ fn operand_role(data_type: &DataType) -> OperandRole {
         // timestamp, string or another calendar interval, and rejects it against a day-time
         // interval or a TIME, so it cannot share the day-time role.
         DataType::Interval(_) => IntervalCalendar,
-        DataType::Boolean | DataType::Binary | DataType::LargeBinary | DataType::BinaryView => {
-            Unsupported
-        }
+        // Spark's Parquet reader maps an unannotated FIXED_LEN_BYTE_ARRAY to `BinaryType`
+        // (`ParquetSchemaConverter.scala`), so a fixed-size binary reaches arithmetic as a
+        // plain BINARY and Spark rejects it like the other widths.
+        DataType::Boolean
+        | DataType::Binary
+        | DataType::LargeBinary
+        | DataType::BinaryView
+        | DataType::FixedSizeBinary(_) => Unsupported,
         // Containers (VARIANT included — Sail stores it as a struct). Spark rejects them for
         // every arithmetic operator against every operand: measured across all 2080 cells of the
         // cartesian product, it accepts none. They are `Unsupported` rather than `Other` so the
@@ -940,7 +956,7 @@ fn operand_role(data_type: &DataType) -> OperandRole {
 
 /// The verdict every `+`/`-`/`*` guard shares before its per-operator rules: an `Unsupported`
 /// operand (boolean, binary) is always rejected, and an `Other` operand (a type outside the
-/// validated matrix — fixed-size binary, dictionary, run-end-encoded, union) is deferred to
+/// validated matrix — dictionary, run-end-encoded, union) is deferred to
 /// DataFusion rather than hard-rejected.
 /// `None` means neither applies, so the caller runs its own accept/reject logic.
 fn framing_verdict(a: OperandRole, b: OperandRole) -> Option<bool> {
@@ -976,19 +992,16 @@ fn is_date_offset_numeric(data_type: &DataType) -> bool {
     // `DateAdd`/`DateSub` take `TypeCollection(IntegerType, ShortType, ByteType)`
     // (`datetimeExpressions.scala:331,371`) and are `ExpectsInputTypes`, not
     // `ImplicitCastInputTypes`, so nothing widens a BIGINT/FLOAT/DOUBLE/DECIMAL offset into range.
-    // The unsigned widths are included by the Spark type they are REPORTED as, not by their Arrow
-    // name: `crates/sail-spark-connect/src/proto/data_type_arrow.rs` maps `UInt8 -> BYTE`,
-    // `UInt16 -> SHORT` and `UInt32 -> INT`, all three of which `DateAdd` accepts, so rejecting
-    // `UInt32` would refuse an offset the client sees as a plain INT. `UInt64` maps to BIGINT and
-    // is correctly absent.
+    // The unsigned widths follow the type SPARK gives them, measured on the same Parquet file:
+    // its reader WIDENS each by one step so every value stays representable -- UINT_8 -> SMALLINT,
+    // UINT_16 -> INT, UINT_32 -> BIGINT, UINT_64 -> DECIMAL(20,0)
+    // (`ParquetSchemaConverter.scala`). So only `UInt8` and `UInt16` land inside `DateAdd`'s
+    // accept set. (Sail's own Arrow->Spark mapping instead reports the same-width signed type,
+    // which is one step narrower than Spark's and lossy above 2^31; that divergence is
+    // pre-existing and lives in `data_type_arrow.rs`, not here.)
     matches!(
         data_type,
-        DataType::Int8
-            | DataType::Int16
-            | DataType::Int32
-            | DataType::UInt8
-            | DataType::UInt16
-            | DataType::UInt32
+        DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::UInt8 | DataType::UInt16
     )
 }
 
@@ -1169,6 +1182,7 @@ fn rejects_as_divide_dividend(data_type: &DataType) -> bool {
             | DataType::Binary
             | DataType::LargeBinary
             | DataType::BinaryView
+            | DataType::FixedSizeBinary(_)
             // Container types (and VARIANT, which is stored as a struct). Spark rejects them
             // at ANALYSIS with DATATYPE_MISMATCH for every arithmetic operator, while `/`
             // otherwise lets them fall through to a `Float64` cast that fails in the EXECUTOR
@@ -1201,6 +1215,38 @@ fn rejects_as_divide_divisor(data_type: &DataType) -> bool {
 /// class-prefixed messages do exist (`spark_parse_json.rs` emits the full
 /// `[DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE] …` string), so closing this is a matter of doing it
 /// across all the arithmetic rejects at once rather than a missing capability.
+/// Spark rejects a UDT operand for every arithmetic operator: a UDT is none of the input types
+/// the five operators accept (`Expression.scala:840-857`), whatever it is stored as. Sail keeps
+/// UDT identity in the field metadata rather than in the `DataType`, so this is the one operand
+/// check [`operand_role`] cannot make -- it would judge the storage type underneath instead.
+fn rejects_udt_operand(
+    op: &str,
+    left: &Expr,
+    right: &Expr,
+    schema: &DFSchemaRef,
+) -> Option<PlanError> {
+    let field = |expr: &Expr| expr.to_field(schema).ok().map(|(_, field)| field);
+    let (left, right) = (field(left), field(right));
+    if !left
+        .iter()
+        .chain(right.iter())
+        .any(|field| is_spark_udt_field(field))
+    {
+        return None;
+    }
+    let name = |field: &Option<FieldRef>| {
+        field.as_ref().map_or_else(
+            || "UNKNOWN".to_string(),
+            |field| spark_field_type_name(field),
+        )
+    };
+    Some(PlanError::analysis(format!(
+        "cannot resolve arithmetic '{op}' with operand types {} and {}",
+        name(&left),
+        name(&right)
+    )))
+}
+
 fn arithmetic_operand_error(op: &str, left: &DataType, right: &DataType) -> PlanError {
     PlanError::analysis(format!(
         "cannot resolve arithmetic '{op}' with operand types {} and {}",
