@@ -408,6 +408,18 @@ def test_to_schema_rejects_ambiguous_name(spark):
         src.to(target).collect()
 
 
+def test_to_schema_keeps_the_dataframe_column_identity(spark):
+    # `reorderFields` renames the attribute through `withName`, which keeps its `exprId` when the
+    # name is unchanged, and that id is the identity a `df["col"]` reference resolves against. So
+    # the reference still works on the output, which it would not if a new attribute were minted.
+    df = spark.createDataFrame([(1, 2)], "a int, b int")
+    target = StructType([StructField("a", IntegerType()), StructField("b", IntegerType())])
+
+    assert df.to(target).select(df["a"]).collect() == [Row(a=1)]
+    assert df.to(target).filter(df["a"] == 1).count() == 1
+    assert df.to(target).withColumn("z", df["b"]).collect() == [Row(a=1, b=2, z=2)]
+
+
 def test_to_schema_suggests_by_distance_to_the_raw_field_name(spark):
     # `Project.reorderFields` measures the edit distance against the raw `StructField.name`, unlike
     # the analyzer, which measures it against the name it renders. A target name that needs quoting

@@ -97,8 +97,15 @@ impl PlanResolver<'_> {
             } else {
                 expr.cast_to(target_field.data_type(), &input.schema())?
             };
-            // The column takes the name of the target field rather than the one it matched.
+            // The column takes the name of the target field rather than the one it matched, but it
+            // keeps the plan IDs of the column it came from. Spark renames the attribute through
+            // `withName`, which preserves its `exprId`, and that identity is what a `df["col"]`
+            // reference resolves against, so the reference has to keep working on the output.
+            let plan_ids = state.get_field_info(input_field.name())?.plan_ids();
             let field_id = state.register_field_name(target_name.clone());
+            for plan_id in plan_ids {
+                state.register_plan_id_for_field(&field_id, plan_id)?;
+            }
             projected_exprs.push(expr.alias(field_id));
         }
         let projected_plan =
