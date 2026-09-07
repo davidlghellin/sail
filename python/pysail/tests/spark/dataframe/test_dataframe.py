@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
 from pyspark.sql import Row
-from pyspark.sql.functions import col, lit, row_number
+from pyspark.sql.functions import col, expr, lit, row_number
 from pyspark.sql.types import IntegerType, LongType, StringType, StructField, StructType
 from pyspark.sql.window import Window
 
@@ -377,6 +377,22 @@ def test_group_by_does_not_use_the_resolver_alone(spark):
 
     # The very same name does match where the resolver is used alone.
     assert spark.sql("SELECT 1 AS a").groupBy("A").count().columns == ["A", "count"]
+
+
+@pytest.mark.xfail(not is_jvm_spark(), reason="Known Sail bug", strict=True)
+def test_the_schema_of_an_expression_is_available_before_it_is_evaluated(spark):
+    # `ConstantFolding` is an optimizer rule (`optimizer/expressions.scala:50`), not an analyzer
+    # one, so an expression that cannot be evaluated still reports a schema and only raises once
+    # rows are produced. Sail folds it while resolving, so the schema itself is unreachable. This
+    # is the resolver rather than any one method: a `select`, a `withColumn` and a plain SQL
+    # projection of the same expression all fold it just as eagerly.
+    df = spark.sql("SELECT * FROM VALUES (1) AS t(a)")
+
+    assert df.select(expr("1/0")).columns == ["(1 / 0)"]
+    assert df.withColumn("c", expr("1/0")).columns == ["a", "c"]
+
+    with pytest.raises(Exception, match="DIVIDE_BY_ZERO"):
+        df.select(expr("1/0")).collect()
 
 
 def test_to_schema_matches_name_like_the_analyzer(spark):

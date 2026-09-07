@@ -97,28 +97,11 @@ impl PlanResolver<'_> {
             } else {
                 column.cast_to(target_field.data_type(), &input.schema())?
             };
-            // The column takes the name of the target field rather than the one it matched, but it
-            // keeps the plan IDs of the column it came from, so a `df["col"]` reference still
-            // resolves on the output.
+            // The column takes the name of the target field but keeps its plan IDs, so a
+            // `df["col"]` reference still resolves on the output.
             //
-            // TODO: Spark keeps that reference working only while the column is still an
-            // attribute. `createNewColumn` renames one with `withName`, which keeps its `exprId`,
-            // but `reconcileColumnType` only hands the column back that way when the type already
-            // matches and is not a container: a struct, an array and a map reach arms that rebuild
-            // them, and a type that differs becomes a cast, so both end up as an alias with a
-            // fresh id. Carrying the plan IDs over regardless makes a rebuilt column keep an
-            // identity Spark drops, so `select`, `withColumn`, `groupBy` and a join condition all
-            // accept a reference Spark rejects -- the join included, since Spark's pull-up
-            // descends only through a `UnaryNode` and `Join` is binary. Withholding the IDs is not
-            // the fix either: Spark resolves the reference against the plan node tagged with the
-            // id rather than against the output, and `Filter` and `Sort` then pull the missing
-            // attribute up from below the projection, so withholding would reject those two, which
-            // resolve today and resolved before this rewrite as well. Where they do resolve, Sail
-            // reads the reconciled column while Spark reads the original, so a reconciliation that
-            // changes value or order diverges silently. Closing this needs an operator-scoped
-            // resolution model, so the divergence is covered by the `@sail-bug` tests in
-            // `test_dataframe.py` (`test_to_schema_drops_the_identity_of_a_column_it_has_to_cast`
-            // and `test_to_schema_reads_the_reconciled_column_in_filter_and_sort`).
+            // TODO: Spark drops that identity for a column it rebuilds, and withholding the IDs is
+            // not the fix either. See `test_to_schema_drops_the_identity_of_a_column_it_has_to_cast`.
             let plan_ids = state.get_field_info(input_field.name())?.plan_ids();
             let field_id = state.register_field_name(target_name.clone());
             for plan_id in plan_ids {
@@ -300,6 +283,10 @@ impl PlanResolver<'_> {
             .zip(names)
             .map(|(column, name)| {
                 // The alias name replaces the name of the column that it matches.
+                //
+                // TODO: replacing in place takes the column out of the output, and Sail has no
+                // equivalent of Spark's missing-attribute pull-up for `Filter`, only for `Sort`.
+                // See `test_a_filter_by_a_replaced_column_reads_the_original`.
                 match aliases
                     .iter()
                     .find(|(alias, ..)| self.match_identifier(alias, &name))
@@ -336,9 +323,7 @@ impl PlanResolver<'_> {
 
     /// Builds the named expression for a column added or replaced by `withColumn`.
     /// Spark always sets explicit metadata for such columns, defaulting to empty metadata, so the
-    /// metadata of the expression is never inherited. Empty metadata is only attached when there
-    /// is something to override, since metadata that the physical schema does not have would
-    /// otherwise make it differ from the logical one.
+    /// metadata of the expression is never inherited.
     fn added_column(
         &self,
         name: &str,
@@ -347,12 +332,27 @@ impl PlanResolver<'_> {
         schema: &DFSchemaRef,
     ) -> PlanResult<NamedExpr> {
         let named = NamedExpr::new(vec![name.to_string()], expr.clone());
-        let metadata = match metadata {
-            Some(metadata) if !metadata.is_empty() => metadata.clone(),
-            _ if expr.metadata(schema)?.is_empty() => return Ok(named),
-            _ => vec![(spec::SPARK_METADATA_JSON_KEY.to_string(), "{}".to_string())],
-        };
-        Ok(named.with_metadata(metadata))
+        if let Some(metadata) = metadata
+            && !metadata.is_empty()
+        {
+            return Ok(named.with_metadata(metadata.clone()));
+        }
+        // The key is added on top of what the field already has, so it is only attached when
+        // there is Spark metadata to override: over a column comment it would make the logical
+        // schema differ from the physical one. TODO: it still fails over a plan that keeps the
+        // metadata out of the physical projection, as `withMetadata` does.
+        let inherited = expr.metadata(schema)?;
+        let overridden = inherited
+            .inner()
+            .get(spec::SPARK_METADATA_JSON_KEY)
+            .is_some_and(|x| x != "{}");
+        if !overridden {
+            return Ok(named);
+        }
+        Ok(named.with_metadata(vec![(
+            spec::SPARK_METADATA_JSON_KEY.to_string(),
+            "{}".to_string(),
+        )]))
     }
 
     pub(super) async fn resolve_query_replace(

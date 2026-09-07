@@ -59,7 +59,7 @@ fn quote_identifier_parts<'a>(parts: impl Iterator<Item = &'a str>) -> String {
 
 /// Renders a name that reaches a message as a single string the way Spark's
 /// `toSQLId(parts: String)` does, which parses the name before quoting each part
-/// (`DataTypeErrorsBase.scala:27`). A part of the name that contains a dot is therefore reported
+/// (`org.apache.spark.sql.errors.DataTypeErrorsBase#toSQLId`). A part of the name that contains a dot is therefore reported
 /// as several quoted parts, and a name that is already quoted keeps its back quotes single. A
 /// name the parser rejects is quoted whole, since its syntax has an error condition of its own.
 pub(in crate::resolver) fn quote_identifier_name(name: &str) -> String {

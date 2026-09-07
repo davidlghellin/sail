@@ -30,6 +30,7 @@ import pytest
 from pyspark.sql import functions as F  # noqa: N812
 from pyspark.sql.functions import col, lit, lower, row_number
 from pyspark.sql.functions import sum as spark_sum
+from pyspark.sql.types import IntegerType, StringType, StructField, StructType
 from pyspark.sql.window import Window
 
 from pysail.testing.spark.utils.common import is_jvm_spark, pyspark_version
@@ -276,7 +277,7 @@ def test_replacement_survives_a_later_analysis(spark, case_sensitive, columns):
         _unconfigure(spark)
 
 
-@pytest.mark.xfail(not is_jvm_spark(), reason="Known Sail bug", strict=True)
+@_SAIL_BUG
 def test_an_added_column_carries_no_qualifier(spark):
     # The star expansion returns the input's own attributes for the columns it passes through, so
     # those keep their qualifier, while a column the projection adds is an alias with none.
@@ -287,7 +288,7 @@ def test_an_added_column_carries_no_qualifier(spark):
         _ = df.withColumn("c", lit(1)).select("x.c").collect()
 
 
-@pytest.mark.xfail(not is_jvm_spark(), reason="Known Sail bug", strict=True)
+@_SAIL_BUG
 def test_a_rename_keeps_the_qualifier_of_the_columns_it_did_not_touch(spark):
     # Renaming one column does not take the qualifier away from the others.
     df = spark.sql("SELECT 1 AS a, 2 AS b").alias("x")
@@ -334,7 +335,7 @@ def _annotated(spark):
     return spark.sql("SELECT * FROM VALUES (1, 'x'), (2, 'y') AS t(a, b)").withMetadata("a", {"k": "v"})
 
 
-@pytest.mark.xfail(not is_jvm_spark(), reason="Known Sail bug", strict=True)
+@_SAIL_BUG
 def test_metadata_on_a_passed_through_column_reaches_collect(spark):
     # The metadata rides on an alias over a plain column reference, and it survives into the
     # schema but not into the physical projection, so the plan only fails once it has to produce
@@ -347,7 +348,7 @@ def test_metadata_on_a_passed_through_column_reaches_collect(spark):
     pyspark_version() < (4, 2),
     reason="The client carries the field metadata through `toArrow` from PySpark 4.2 on",
 )
-@pytest.mark.xfail(not is_jvm_spark(), reason="Known Sail bug", strict=True)
+@_SAIL_BUG
 def test_metadata_on_a_passed_through_column_reaches_to_arrow(spark):
     table = _annotated(spark).toArrow()
 
@@ -366,6 +367,50 @@ def test_metadata_on_a_column_the_projection_builds_reaches_the_client(spark):
 
     assert [row.asDict() for row in df.collect()] == [{"a": 1, "b": "x", "c": 1}]
     assert df.toArrow().schema.field("c").metadata == {b"SPARK::metadata::json": b'{"k": "v"}'}
+
+
+def test_a_column_the_projection_reads_keeps_the_field_metadata_it_does_not_own(spark, tmp_path):
+    # `withColumn` overrides the Spark metadata of the column it builds, defaulting to empty. The
+    # field it reads may carry metadata that is not part of what Spark reports -- the comment of a
+    # table column is stored as one -- and the override is added on top of what the field already
+    # has rather than replacing it, so attaching it there makes the logical schema differ from the
+    # physical one and the plan fails once it has to produce rows.
+    location = tmp_path / "commented"
+    spark.sql(f"CREATE TABLE commented (id INT, a STRING COMMENT 'hello') USING parquet LOCATION '{location}'")
+    try:
+        spark.sql("INSERT INTO commented VALUES (1, 'x')")
+        replaced = spark.table("commented").withColumn("a", col("a"))
+        added = spark.table("commented").withColumn("c", col("a"))
+
+        # The column the projection replaces, and a new one built from the same field: whatever the
+        # field underneath carries, the metadata Spark reports for either is empty.
+        assert [row.asDict() for row in replaced.collect()] == [{"id": 1, "a": "x"}]
+        assert replaced.schema["a"].metadata == {}
+        assert [row.asDict() for row in added.collect()] == [{"id": 1, "a": "x", "c": "x"}]
+        assert added.schema["c"].metadata == {}
+    finally:
+        spark.sql("DROP TABLE IF EXISTS commented")
+
+
+@_SAIL_BUG
+def test_a_replacement_clears_the_metadata_a_using_join_passed_through(spark):
+    # The same shape as `test_metadata_on_a_passed_through_column_reaches_collect`: the override
+    # rides on an alias over a plain column reference and reaches the schema but not the physical
+    # projection. Here nothing asked for metadata -- the alias carries only the empty override that
+    # `withColumn` always sets -- and the metadata came from the input schema rather than from
+    # `withMetadata`, so no part of this is covered by the cases above.
+    schema = StructType(
+        [
+            StructField("id", IntegerType()),
+            StructField("a", StringType(), metadata={"k": "v"}),
+        ]
+    )
+    left = spark.createDataFrame([(1, "a1")], schema)
+    right = spark.createDataFrame([(1, "b1")], "id int, b string")
+    df = left.join(right, "id").withColumn("a", col("a"))
+
+    assert [row.asDict() for row in df.collect()] == [{"id": 1, "a": "a1", "b": "b1"}]
+    assert df.schema["a"].metadata == {}
 
 
 # A column added or renamed, then consumed by another operation. The reported failure was deferred:
@@ -639,6 +684,73 @@ def test_composition_error(spark, case, case_sensitive, condition):
             _ = _composition(spark)[case]().collect()
     finally:
         _unconfigure(spark)
+
+
+# A `df["name"]` reference is resolved against the plan node tagged with the id rather than against
+# its output, so it keeps working after the column it names has been replaced or renamed away. The
+# operator above decides whether it can: Spark's pull-up walks down through a `UnaryNode`, so
+# `Filter` and `Sort` both reach the attribute below the projection, while `Project` and `Aggregate`
+# consume the output and reject it. The three cases below are the ones where the answer differs
+# between reading the original column and reading the one that replaced it.
+
+
+# The row the reference selects. Its negation is a different row, which is what makes the
+# filtered result tell the original column apart from the one that replaced it.
+_SELECTED = 2
+
+
+def _negated(spark):
+    """A frame whose replacement negates the column, so the two answers order and filter apart."""
+    df = spark.sql("SELECT * FROM VALUES (1), (2), (3) AS t(a)")
+    return df, df.withColumn("A", -col("a"))
+
+
+def test_a_sort_by_a_replaced_column_reads_the_original(spark):
+    # The reference names the pre-replacement column, so ascending order follows `a` (1, 2, 3) and
+    # the rows come out as -1, -2, -3. Sorting by the *name* instead resolves against the output,
+    # which is the replacement, and ascending order follows `A` the other way round. The pair is
+    # what makes either answer wrong for the other query.
+    df, replaced = _negated(spark)
+
+    assert [tuple(row) for row in replaced.orderBy(df["a"].asc()).collect()] == [(-1,), (-2,), (-3,)]
+    assert [tuple(row) for row in replaced.orderBy(col("a").asc()).collect()] == [(-3,), (-2,), (-1,)]
+
+
+@_SAIL_BUG
+def test_a_filter_by_a_replaced_column_reads_the_original(spark):
+    # `Filter` is a `UnaryNode` like `Sort`, so the same reference resolves there too. Keeping the
+    # row where the original `a` is 2 keeps the row whose replacement is -2, which is the answer
+    # that tells the original apart from the replacement: filtering on `A` would keep nothing.
+    df, replaced = _negated(spark)
+
+    assert [tuple(row) for row in replaced.filter(df["a"] == _SELECTED).collect()] == [(-_SELECTED,)]
+
+    # The same replacement spelled with the case the column already has. That spelling took the
+    # column out of the output under the old exact matching too, so it is the one that shows the
+    # limitation is older than the rewrite rather than a consequence of it.
+    same_case = df.withColumn("a", -col("a"))
+    assert [tuple(row) for row in same_case.filter(df["a"] == _SELECTED).collect()] == [(-_SELECTED,)]
+
+
+@_SAIL_BUG
+def test_a_filter_by_a_renamed_column_reads_it_under_its_old_name(spark):
+    # The same rule for a rename, where the values survive and only the name is gone.
+    df = spark.sql("SELECT * FROM VALUES (1), (2), (3) AS t(a)")
+    renamed = df.withColumnRenamed("a", "Z")
+
+    assert renamed.columns == ["Z"]
+    assert [tuple(row) for row in renamed.filter(df["a"] == _SELECTED).collect()] == [(_SELECTED,)]
+
+
+def test_a_filter_by_a_column_the_projection_keeps_needs_no_pull_up(spark):
+    # The control the three above need: what `Filter` cannot do is reach an attribute the
+    # projection dropped, not resolve a `df["col"]` reference at all. When the projection keeps the
+    # column there is nothing to pull up and both engines agree, so a fix that made every plan-id
+    # reference in a filter resolve would satisfy the xfails above and still be wrong here.
+    df = spark.sql("SELECT * FROM VALUES (1), (2), (3) AS t(a)")
+    kept = df.withColumn("b", lit(9))
+
+    assert [tuple(row) for row in kept.filter(df["a"] == _SELECTED).collect()] == [(_SELECTED, 9)]
 
 
 # The two axes of the family that the name matrix above does not touch: what the metadata itself
@@ -1702,5 +1814,76 @@ def test_two_spellings_of_one_name(spark, case, case_sensitive, columns, rows):
         df = _folding_cases(spark)[case]()
         assert df.columns == columns
         assert _rows(df) == rows
+    finally:
+        _unconfigure(spark)
+
+
+# The matrix above compares one name against another with the resolver, which is one of the two
+# rules Spark folds identifiers with. The duplicate check lowercases instead, and an attribute
+# reference has to satisfy both. The cases below are the ones where the rules disagree, so they
+# are the only ones that tell which rule ran.
+
+# `İ` lowercases to two code points, `i` plus a combining dot, so `toLowerCase` does not make it
+# `i` -- but `Character.toUpperCase` maps both to `İ`, so `equalsIgnoreCase` does. Every other
+# character in the matrix above folds the same way under both rules.
+_DOTTED_CAPITAL_I = "\u0130"
+
+
+def test_the_resolver_and_the_duplicate_check_fold_a_name_differently(spark):
+    # `withColumn` matches with the resolver alone, so `İ` replaces the column named `i` -- that is
+    # the "dotted capital I" row above. The duplicate check `UnresolvedStarWithColumns` runs first
+    # lowercases instead, and the two names do not collide there, so the same pair of names is
+    # accepted by `withColumns` and both columns are added. A single fold cannot produce both
+    # answers.
+    _configure(spark, "false")
+    try:
+        added = spark.sql("SELECT 1 AS a, 2 AS b").withColumns({"i": lit(1), _DOTTED_CAPITAL_I: lit(2)})
+
+        assert added.columns == ["a", "b", "i", _DOTTED_CAPITAL_I]
+        assert [row.asDict() for row in added.collect()] == [{"a": 1, "b": 2, "i": 1, _DOTTED_CAPITAL_I: 2}]
+
+        # The contrast: `ẞ` lowercases to `ß`, so there the two rules agree and the pair is a
+        # duplicate. Without this half, a fold that rejected everything would also pass.
+        with pytest.raises(Exception, match="COLUMN_ALREADY_EXISTS"):
+            _ = spark.sql("SELECT 1 AS a").withColumns({"\u00df": lit(1), "\u1e9e": lit(2)}).collect()
+    finally:
+        _unconfigure(spark)
+
+
+def test_an_attribute_reference_has_to_satisfy_both_folds(spark):
+    # `withMetadata` names the column through `self[columnName]`, an attribute reference, which
+    # Spark looks up in a map keyed by the lowercased name before filtering the candidates with the
+    # resolver. `İ` passes the resolver and fails the lookup, so the name that `withColumn`
+    # resolves is one that `withMetadata` cannot.
+    _configure(spark, "false")
+    try:
+        df = spark.sql("SELECT 1 AS i")
+
+        assert df.withColumn(_DOTTED_CAPITAL_I, lit(9)).columns == [_DOTTED_CAPITAL_I]
+        with pytest.raises(Exception, match="CANNOT_RESOLVE_DATAFRAME_COLUMN"):
+            _ = df.withMetadata(_DOTTED_CAPITAL_I, {"k": "v"}).collect()
+    finally:
+        _unconfigure(spark)
+
+
+# Vithkuqi was added in Unicode 14, and the JDK that runs Spark ships Unicode 13, so it has no case
+# mapping there and the two letters are simply different characters. A fold built on newer tables
+# knows the pair and would merge them.
+_VITHKUQI_CAPITAL_A = "\U00010570"
+_VITHKUQI_SMALL_A = "\U00010597"
+
+
+def test_a_case_pair_the_jdk_does_not_know_is_not_folded(spark):
+    # Both names survive, under a resolver that is folding every pair it does know.
+    _configure(spark, "false")
+    try:
+        df = spark.sql(f"SELECT 1 AS `{_VITHKUQI_CAPITAL_A}`")
+        added = df.withColumn(_VITHKUQI_SMALL_A, lit(9))
+
+        assert added.columns == [_VITHKUQI_CAPITAL_A, _VITHKUQI_SMALL_A]
+        assert [tuple(row) for row in added.collect()] == [(1, 9)]
+
+        # And the rename finds nothing to rename, rather than renaming the capital.
+        assert df.withColumnRenamed(_VITHKUQI_SMALL_A, "z").columns == [_VITHKUQI_CAPITAL_A]
     finally:
         _unconfigure(spark)

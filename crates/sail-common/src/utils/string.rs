@@ -82,10 +82,8 @@ pub fn escape_meta_characters(s: &str) -> String {
 // up to and including the one named (`AGES[..=i]` in `regex-syntax`), so this matches a character
 // assigned in Unicode 13.0 **or earlier**, which is what the JVM knows.
 //
-// Note that this gates which characters are folded, not which tables are used: the mappings still
-// come from a newer ICU. The two agree for every code point OpenJDK 17 knows, which was checked by
-// dumping `String.toLowerCase` and `String.equalsIgnoreCase` over the whole code point space and
-// comparing, so what is left below is the handful of cases worth reading.
+// This gates which characters are folded, not which tables are used: the mappings still come
+// from a newer ICU, and they agree for every code point OpenJDK 17 knows.
 #[expect(clippy::expect_used)]
 static UNICODE_13_OR_EARLIER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\p{Age:13.0}$").expect("Unicode age pattern should be valid"));

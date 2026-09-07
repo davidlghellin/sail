@@ -198,6 +198,10 @@ impl PlanResolver<'_> {
         // pattern case-insensitively unless the analysis is case sensitive.
         // `String.matches` matches the whole name, so the pattern is grouped before it is
         // anchored: an alternation would otherwise bind tighter than the anchors.
+        //
+        // TODO: Rust's `(?i)` folds all of Unicode where Java's folds ASCII alone
+        // (`org.apache.spark.sql.catalyst.analysis.UnresolvedRegex#expandStar`), so a non-ASCII capital reaches a column Spark leaves alone.
+        // See `test_col_regex_folds_only_ascii`.
         let anchored_pattern = if self.config.case_sensitive {
             format!("^(?:{pattern_str})$")
         } else {
