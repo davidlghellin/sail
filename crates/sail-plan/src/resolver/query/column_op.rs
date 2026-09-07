@@ -91,16 +91,34 @@ impl PlanResolver<'_> {
                 )));
             }
             let (input_qualifier, input_field) = input.schema().qualified_field(input_idx);
-            let expr = Expr::Column(Column::from((input_qualifier, input_field)));
+            let column = Expr::Column(Column::from((input_qualifier, input_field)));
             let expr = if input_field.data_type() == target_field.data_type() {
-                expr
+                column
             } else {
-                expr.cast_to(target_field.data_type(), &input.schema())?
+                column.cast_to(target_field.data_type(), &input.schema())?
             };
             // The column takes the name of the target field rather than the one it matched, but it
-            // keeps the plan IDs of the column it came from. Spark renames the attribute through
-            // `withName`, which preserves its `exprId`, and that identity is what a `df["col"]`
-            // reference resolves against, so the reference has to keep working on the output.
+            // keeps the plan IDs of the column it came from, so a `df["col"]` reference still
+            // resolves on the output.
+            //
+            // TODO: Spark keeps that reference working only while the column is still an
+            // attribute. `createNewColumn` renames one with `withName`, which keeps its `exprId`,
+            // but `reconcileColumnType` only hands the column back that way when the type already
+            // matches and is not a container: a struct, an array and a map reach arms that rebuild
+            // them, and a type that differs becomes a cast, so both end up as an alias with a
+            // fresh id. Carrying the plan IDs over regardless makes a rebuilt column keep an
+            // identity Spark drops, so `select`, `withColumn`, `groupBy` and a join condition all
+            // accept a reference Spark rejects -- the join included, since Spark's pull-up
+            // descends only through a `UnaryNode` and `Join` is binary. Withholding the IDs is not
+            // the fix either: Spark resolves the reference against the plan node tagged with the
+            // id rather than against the output, and `Filter` and `Sort` then pull the missing
+            // attribute up from below the projection, so withholding would reject those two, which
+            // resolve today and resolved before this rewrite as well. Where they do resolve, Sail
+            // reads the reconciled column while Spark reads the original, so a reconciliation that
+            // changes value or order diverges silently. Closing this needs an operator-scoped
+            // resolution model, so the divergence is covered by the `@sail-bug` tests in
+            // `test_dataframe.py` (`test_to_schema_drops_the_identity_of_a_column_it_has_to_cast`
+            // and `test_to_schema_reads_the_reconciled_column_in_filter_and_sort`).
             let plan_ids = state.get_field_info(input_field.name())?.plan_ids();
             let field_id = state.register_field_name(target_name.clone());
             for plan_id in plan_ids {

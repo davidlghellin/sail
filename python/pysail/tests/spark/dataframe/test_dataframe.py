@@ -5,7 +5,7 @@ import pytest
 from pandas.testing import assert_frame_equal
 from pyspark.sql import Row
 from pyspark.sql.functions import col, lit, row_number
-from pyspark.sql.types import IntegerType, StringType, StructField, StructType
+from pyspark.sql.types import IntegerType, LongType, StringType, StructField, StructType
 from pyspark.sql.window import Window
 
 from pysail.testing.spark.utils.common import is_jvm_spark, pyspark_version
@@ -409,15 +409,89 @@ def test_to_schema_rejects_ambiguous_name(spark):
 
 
 def test_to_schema_keeps_the_dataframe_column_identity(spark):
-    # `reorderFields` renames the attribute through `withName`, which keeps its `exprId` when the
-    # name is unchanged, and that id is the identity a `df["col"]` reference resolves against. So
-    # the reference still works on the output, which it would not if a new attribute were minted.
+    # `createNewColumn` renames the attribute through `withName`, which keeps its `exprId`, and
+    # that id is the identity a `df["col"]` reference resolves against. It only gets there while
+    # the column is still an attribute, which `reconcileColumnType` leaves alone for a scalar whose
+    # type already matches -- a rename included, since `withName` keeps the id either way.
     df = spark.createDataFrame([(1, 2)], "a int, b int")
     target = StructType([StructField("a", IntegerType()), StructField("b", IntegerType())])
 
     assert df.to(target).select(df["a"]).collect() == [Row(a=1)]
     assert df.to(target).filter(df["a"] == 1).count() == 1
     assert df.to(target).withColumn("z", df["b"]).collect() == [Row(a=1, b=2, z=2)]
+
+    renamed = StructType([StructField("A", IntegerType()), StructField("b", IntegerType())])
+    assert df.to(renamed).select(df["a"]).collect() == [Row(A=1)]
+
+
+@pytest.mark.xfail(not is_jvm_spark(), reason="Known Sail bug", strict=True)
+def test_to_schema_drops_the_identity_of_a_column_it_has_to_cast(spark):
+    # A type that has to be reconciled reaches `Alias(other, name)()` instead, which mints a fresh
+    # `exprId`, so the reference stops resolving. The untouched sibling still resolves, which is
+    # what makes this about the rebuilt column rather than about `to` dropping every id.
+    df = spark.createDataFrame([(1, 2)], "a int, b int")
+    widened = StructType([StructField("a", LongType()), StructField("b", IntegerType())])
+
+    with pytest.raises(Exception, match="CANNOT_RESOLVE_DATAFRAME_COLUMN"):
+        df.to(widened).select(df["a"]).collect()
+
+    # A join condition does not pull the attribute up either: `resolveExprsAndAddMissingAttrs`
+    # descends only through a `UnaryNode`, and `Join` is binary.
+    other = spark.createDataFrame([(1,)], "k int")
+    with pytest.raises(Exception, match="CANNOT_RESOLVE_DATAFRAME_COLUMN"):
+        df.to(widened).join(other, df["a"] == other["k"]).count()
+
+    assert df.to(widened).select(df["b"]).collect() == [Row(b=2)]
+
+
+def test_to_schema_keeps_a_rebuilt_column_reachable_from_filter_and_sort(spark):
+    # Spark resolves a `df["col"]` reference against the plan node tagged with the id rather than
+    # against the output, and `Filter` and `Sort` then pull the missing attribute up from below the
+    # projection. So these two keep working on a column that `select` can no longer reach, and
+    # withholding the plan IDs to make `select` agree would reject them -- which is why the
+    # narrowing was rejected, and nothing else asserts it. The two engines land on the same answer
+    # here only because widening preserves value and order; which column each one actually reads is
+    # `test_to_schema_reads_the_reconciled_column_in_filter_and_sort`.
+    df = spark.createDataFrame([(1, 2)], "a int, b int")
+    widened = StructType([StructField("a", LongType()), StructField("b", IntegerType())])
+    out = df.to(widened)
+
+    assert out.filter(df["a"] == 1).count() == 1
+    assert out.sort(df["a"]).count() == 1
+
+
+@pytest.mark.xfail(not is_jvm_spark(), reason="Known Sail bug", strict=True)
+def test_to_schema_reads_the_reconciled_column_in_filter_and_sort(spark):
+    # `Filter` and `Sort` resolve the reference to the attribute below the projection, which is the
+    # column as it was before `reconcileColumnType` touched it. Sail resolves it to the reconciled
+    # output column instead, so the two agree only while the reconciliation preserves value and
+    # order, and diverge without either engine raising when it does not.
+    df = spark.createDataFrame([(9.0,), (10.0,)], "a double")
+    ordered = df.to(StructType([StructField("a", StringType())]))
+
+    # Ordered by the original double, not by the string the cast produced.
+    assert [r.a for r in ordered.sort(df["a"]).collect()] == ["9.0", "10.0"]
+
+    narrowed = spark.createDataFrame([(1.5,)], "a double")
+    rounded = narrowed.to(StructType([StructField("a", IntegerType())]))
+    before_the_cast, after_the_cast = 1.5, 1.0
+
+    assert rounded.filter(narrowed["a"] == before_the_cast).count() == 1
+    assert rounded.filter(narrowed["a"] == after_the_cast).count() == 0
+
+
+@pytest.mark.xfail(not is_jvm_spark(), reason="Known Sail bug", strict=True)
+@pytest.mark.parametrize("expression", ["named_struct('n', 1)", "array(1, 2)", "map('a', 1)"])
+def test_to_schema_rebuilds_a_container_even_when_the_schema_is_identical(spark, expression):
+    # A struct, an array and a map each reach an arm of `reconcileColumnType` that rebuilds them
+    # rather than handing the column back, so the attribute never survives and the identity goes
+    # even though the schema is the one the frame already has.
+    df = spark.sql(f"SELECT {expression} AS s, 1 AS k")
+
+    with pytest.raises(Exception, match="CANNOT_RESOLVE_DATAFRAME_COLUMN"):
+        df.to(df.schema).select(df["s"]).collect()
+
+    assert df.to(df.schema).select(df["k"]).collect() == [Row(k=1)]
 
 
 def test_to_schema_suggests_by_distance_to_the_raw_field_name(spark):
