@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use datafusion_common::arrow::datatypes::{FieldRef, Fields};
 use datafusion_common::{Column, DFSchemaRef, TableReference};
-use datafusion_expr::UNNAMED_TABLE;
 use sail_common::spec;
 use sail_common::utils::string::{equals_ignore_case, to_lowercase};
 use sail_common_datafusion::utils::items::ItemTaker;
@@ -10,7 +9,7 @@ use sail_common_datafusion::utils::items::ItemTaker;
 use crate::error::{PlanError, PlanResult};
 use crate::resolver::PlanResolver;
 use crate::resolver::expression::attribute::{
-    quote_identifier_name, quote_identifier_part, unresolved_column_fields_error,
+    qualifier_parts, quote_identifier_name, quote_identifier_part, unresolved_column_fields_error,
 };
 use crate::resolver::state::{FieldInfo, PlanResolverState};
 
@@ -241,16 +240,14 @@ impl PlanResolver<'_> {
         if columns.len() > 1 {
             let mut references = columns
                 .iter()
-                .map(|x| match &x.relation {
-                    Some(relation) if relation.table() != UNNAMED_TABLE => {
-                        let qualifier = relation.to_string();
-                        let parts = qualifier.split('.').chain(std::iter::once(name));
-                        parts
-                            .map(quote_identifier_part)
-                            .collect::<Vec<_>>()
-                            .join(".")
-                    }
-                    _ => quote_identifier_part(name),
+                .map(|x| {
+                    let mut parts = qualifier_parts(x.relation.as_ref());
+                    parts.push(name.to_string());
+                    parts
+                        .iter()
+                        .map(|x| quote_identifier_part(x))
+                        .collect::<Vec<_>>()
+                        .join(".")
                 })
                 .collect::<Vec<_>>();
             references.sort();

@@ -287,6 +287,35 @@ Feature: identifier resolution beyond ASCII
         """
       Then query error \[AMBIGUOUS_REFERENCE\] Reference `id` is ambiguous, could be: \[`l`\.`id`, `r`\.`id`\]\.
 
+    # A qualifier is already several parts, so a dot inside one of them is part of the name and
+    # not a separator: `x.y` is one alias, and quoting it as two would name a table nobody wrote.
+    Scenario: an ambiguous reference keeps a dot that belongs to the qualifier
+      When query
+        """
+        SELECT a FROM (SELECT 1 AS a) AS `x.y`, (SELECT 2 AS a) AS z
+        """
+      Then query error \[AMBIGUOUS_REFERENCE\] Reference `a` is ambiguous, could be: \[`x\.y`\.`a`, `z`\.`a`\]\.
+
+    # The suggestion keeps the qualifier whole for the same reason. Two relations are needed so
+    # that the qualifier is not shared by every candidate, since a shared one is stripped.
+    Scenario: a suggestion keeps a dot that belongs to the qualifier
+      When query
+        """
+        SELECT nope FROM (SELECT 1 AS a) AS `x.y`, (SELECT 2 AS b) AS z
+        """
+      Then query error \[UNRESOLVED_COLUMN\.WITH_SUGGESTION\] A column, variable, or function parameter with name `nope` cannot be resolved\. Did you mean one of the following\? \[`z`\.`b`, `x\.y`\.`a`\]\.
+
+    # Star expansion is the opposite case, and the asymmetry is deliberate: `UnresolvedStar`
+    # joins its target without quoting the parts first (`unresolved.scala:607`), unlike
+    # `Attribute.qualifiedName`, so Spark itself splits the dot back out here. Keeping the
+    # qualifier whole would look more correct and would diverge.
+    Scenario: a star target is split on a dot the way Spark splits it
+      When query
+        """
+        SELECT `a.b`.* FROM (SELECT 1 AS c) AS z
+        """
+      Then query error \[CANNOT_RESOLVE_STAR_EXPAND\] Cannot resolve `a`\.`b`\.\* given input columns `c`\.
+
     Scenario: a wildcard whose target does not resolve reports the star expansion condition
       When query
         """

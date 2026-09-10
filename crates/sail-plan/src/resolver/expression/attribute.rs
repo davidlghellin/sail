@@ -50,6 +50,25 @@ fn quote_identifier(name: &spec::ObjectName) -> String {
     quote_identifier_parts(name.parts().iter().map(|x| x.as_ref()))
 }
 
+/// The parts of a qualifier, as the user wrote them. The reference is already split, so the parts
+/// are read from it rather than from its rendering: splitting that on dots would cut a single part
+/// that contains one, naming a qualifier nobody wrote.
+///
+/// A relation the user did not name carries DataFusion's placeholder qualifier, while the matching
+/// attribute in Spark has no qualifier at all, so it contributes nothing.
+pub(crate) fn qualifier_parts(relation: Option<&TableReference>) -> Vec<String> {
+    match relation {
+        Some(relation) if relation.table() != UNNAMED_TABLE => relation
+            .catalog()
+            .into_iter()
+            .chain(relation.schema())
+            .chain(std::iter::once(relation.table()))
+            .map(|x| x.to_string())
+            .collect(),
+        _ => vec![],
+    }
+}
+
 fn quote_identifier_parts<'a>(parts: impl Iterator<Item = &'a str>) -> String {
     parts
         .map(quote_identifier_part)
@@ -188,14 +207,7 @@ pub(in crate::resolver) fn unresolved_column_error(
             }
             // The placeholder qualifier of a relation that has no name is not part of the name
             // of the column, so it must not reach the suggestion.
-            let mut parts = match &column.relation {
-                Some(relation) if relation.table() != UNNAMED_TABLE => relation
-                    .to_string()
-                    .split('.')
-                    .map(|x| x.to_string())
-                    .collect::<Vec<_>>(),
-                _ => vec![],
-            };
+            let mut parts = qualifier_parts(column.relation.as_ref());
             parts.push(info.name().to_string());
             Some(parts)
         })
@@ -413,14 +425,7 @@ impl PlanResolver<'_> {
                             // A plan that the user did not name carries DataFusion's placeholder
                             // qualifier, while the matching attribute in Spark has no qualifier
                             // at all, so it must not reach the reference list.
-                            let mut reference = match qualifier {
-                                Some(qualifier) if qualifier.table() != UNNAMED_TABLE => qualifier
-                                    .to_string()
-                                    .split('.')
-                                    .map(|x| x.to_string())
-                                    .collect::<Vec<_>>(),
-                                _ => vec![],
-                            };
+                            let mut reference = qualifier_parts(qualifier);
                             reference.push(name.as_ref().to_string());
                             let name = inner.last().unwrap_or(name).as_ref().to_string();
                             Some(Ok((reference, name, expr)))
@@ -570,15 +575,11 @@ impl PlanResolver<'_> {
             let references = candidates
                 .iter()
                 .map(|(reference, expr)| match expr {
-                    expr::Expr::OuterReferenceColumn(_, column) => match &column.relation {
-                        Some(relation) if relation.table() != UNNAMED_TABLE => relation
-                            .to_string()
-                            .split('.')
-                            .map(|x| x.to_string())
-                            .chain(std::iter::once(reference.clone()))
-                            .collect(),
-                        _ => vec![reference.clone()],
-                    },
+                    expr::Expr::OuterReferenceColumn(_, column) => {
+                        let mut parts = qualifier_parts(column.relation.as_ref());
+                        parts.push(reference.clone());
+                        parts
+                    }
                     _ => vec![reference.clone()],
                 })
                 .collect();
