@@ -9,7 +9,6 @@ from pandas.testing import assert_frame_equal
 from pyspark.errors import AnalysisException
 from pyspark.sql import Row
 
-from pysail.testing.spark.utils.common import is_jvm_spark
 from pysail.testing.spark.utils.files import get_data_directory_size
 from pysail.testing.spark.utils.sql import escape_sql_identifier, escape_sql_string_literal
 
@@ -753,15 +752,37 @@ def test_parquet_arithmetic_operand_rejection(spark, tmp_path):
     assert spark.sql("SELECT u32 * 2 AS r FROM arithmetic_operands").collect() == [Row(r=2)]
 
 
-@pytest.mark.xfail(not is_jvm_spark(), strict=True, reason="Sail names the Arrow unsigned type")
-def test_parquet_unsigned_operand_is_not_named_unsigned(spark, tmp_path):
-    # Spark has no unsigned types, so `UNSIGNED INT` is a name no Spark message can carry
-    # -- and it contradicts the schema Sail itself reports for the column, which is INT.
-    # The name comes from `spark_type_name`; the mapping it disagrees with lives in
-    # `crates/sail-spark-connect/src/proto/data_type_arrow.rs`.
+@pytest.mark.parametrize(
+    ("column", "spark_type"),
+    [("u8", "SMALLINT"), ("u16", "INT"), ("u32", "BIGINT"), ("u64", "DECIMAL(20,0)")],
+)
+def test_parquet_unsigned_operand_is_named_by_its_spark_type(spark, tmp_path, column, spark_type):
+    # Spark has no unsigned types: its Parquet reader widens each unsigned width one step
+    # so every value stays representable (`ParquetSchemaConverter.scala:290,311`), and the
+    # arithmetic error names that widened type.
     path = str(tmp_path / "unsigned_operand.parquet")
-    pq.write_table(pa.table({"u32": pa.array([1], pa.uint32())}), path)
+    pq.write_table(
+        pa.table(
+            {
+                "u8": pa.array([1], pa.uint8()),
+                "u16": pa.array([1], pa.uint16()),
+                "u32": pa.array([1], pa.uint32()),
+                "u64": pa.array([1], pa.uint64()),
+                "flag": pa.array([True], pa.bool_()),
+            }
+        ),
+        path,
+    )
     spark.read.parquet(path).createOrReplaceTempView("unsigned_operand")
     with pytest.raises(AnalysisException) as excinfo:
-        spark.sql("SELECT DATE'2024-01-01' + u32 FROM unsigned_operand").collect()
-    assert "UNSIGNED" not in str(excinfo.value)
+        spark.sql(f"SELECT flag + {column} FROM unsigned_operand").collect()  # noqa: S608
+    assert f"BOOLEAN and {spark_type}" in str(excinfo.value).replace('"', "")
+
+
+@pytest.mark.parametrize("op", ["+", "-"])
+def test_parquet_uint32_date_offset_is_named_bigint(spark, tmp_path, op):
+    path = str(tmp_path / "uint32_offset.parquet")
+    pq.write_table(pa.table({"u32": pa.array([1], pa.uint32())}), path)
+    spark.read.parquet(path).createOrReplaceTempView("uint32_offset")
+    with pytest.raises(AnalysisException, match="BIGINT"):
+        spark.sql(f"SELECT DATE'2024-01-01' {op} u32 FROM uint32_offset").collect()  # noqa: S608

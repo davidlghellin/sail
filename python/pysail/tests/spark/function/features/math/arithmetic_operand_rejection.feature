@@ -6680,10 +6680,8 @@ Feature: arithmetic operand-type REJECTION matrix (+ - * / %) vs Spark 4.2.0
         """
       Then query error (?i)cannot resolve.*STRUCT<v: VARIANT
 
-    # Spark carries a nested field's COMMENT into the type name. Sail drops nested field
-    # comments before the plan is built -- the metadata is already empty in `.schema` -- so
-    # there is nothing here to carry, and the gap is upstream of this message.
-    @sail-bug
+    # Spark carries a nested field's COMMENT into the type name (`StructField.scala:289-301`),
+    # after NOT NULL. It reaches the plan as field metadata whether it comes from DDL or CAST.
     Scenario: a nested field COMMENT is part of the type name
       Given statement
         """
@@ -6698,6 +6696,22 @@ Feature: arithmetic operand-type REJECTION matrix (+ - * / %) vs Spark 4.2.0
         SELECT s + 1 FROM arithmetic_operand_comment
         """
       Then query error (?i)cannot resolve.*COMMENT 'hola'
+
+    Scenario: a nested field COMMENT set by CAST is part of the type name
+      When query
+        """
+        SELECT CAST(named_struct('a', 1) AS STRUCT<a: INT COMMENT 'note'>) + 1
+        """
+      Then query error (?i)cannot resolve.*STRUCT<a: INT COMMENT 'note'>
+
+    # Spark escapes a single quote in the comment as `\'` (`QuotingUtils.escapeSingleQuotedString`).
+    # The `.` stands for that backslash: it matches `it\'s` and fails on an unescaped `it's`.
+    Scenario: a single quote in a nested field COMMENT is escaped
+      When query
+        """
+        SELECT CAST(named_struct('a', 1) AS STRUCT<a: INT COMMENT 'it\'s'>) + 1
+        """
+      Then query error (?i)cannot resolve.*STRUCT<a: INT COMMENT 'it.'s'>
 
     Scenario: a BOOLEAN operand is named BOOLEAN
       When query

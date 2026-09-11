@@ -201,6 +201,8 @@ fn spark_minus(input: ScalarFunctionInput) -> PlanResult<Expr> {
             // DataFusion coerces a `Time64` pair to `Interval(MonthDayNano)` -- the CALENDAR
             // interval, which combines with nothing day-time. Cast to `Duration` to restore the
             // class Spark gives it.
+            // TODO: `Duration` keeps the value and the day-time family but not Spark's
+            // `HOUR TO SECOND` start/end fields; `arithmetic_time_subtraction.feature` pins it.
             (
                 Ok(DataType::Time32(_) | DataType::Time64(_)),
                 Ok(DataType::Time32(_) | DataType::Time64(_)),
@@ -1207,14 +1209,6 @@ fn rejects_as_divide_divisor(data_type: &DataType) -> bool {
         || matches!(data_type, DataType::Interval(_) | DataType::Duration(_))
 }
 
-/// The plan-time rejection Spark raises at analysis for an arithmetic operand pair it cannot
-/// resolve. Spark emits `[DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE]` with SQLSTATE `42K09`
-/// (`ExpectsInputTypes.scala:55-64` → `error-conditions.json`); these rejects carry neither, and
-/// the `cannot resolve` substring they share with Spark's `Cannot resolve …` text is what the
-/// `.feature` reject scenarios assert. Sail has no error-class framework, but hand-written
-/// class-prefixed messages do exist (`spark_parse_json.rs` emits the full
-/// `[DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE] …` string), so closing this is a matter of doing it
-/// across all the arithmetic rejects at once rather than a missing capability.
 /// Spark rejects a UDT operand for every arithmetic operator: a UDT is none of the input types
 /// the five operators accept (`Expression.scala:840-857`), whatever it is stored as. Sail keeps
 /// UDT identity in the field metadata rather than in the `DataType`, so this is the one operand
@@ -1247,6 +1241,14 @@ fn rejects_udt_operand(
     )))
 }
 
+/// The plan-time rejection Spark raises at analysis for an arithmetic operand pair it cannot
+/// resolve. The `cannot resolve` substring it shares with Spark's `Cannot resolve …` text is what
+/// the `.feature` reject scenarios assert.
+///
+/// TODO: Spark picks the `DATATYPE_MISMATCH` subclass per expression -- `BINARY_OP_DIFF_TYPES`,
+/// `BINARY_OP_WRONG_TYPE` or `UNEXPECTED_INPUT_TYPE` -- always with SQLSTATE `42K09`, plus the
+/// rewritten expression text and query context. Emit them once Sail has structured analysis
+/// errors; `arithmetic_error_metadata.feature` pins the gap.
 fn arithmetic_operand_error(op: &str, left: &DataType, right: &DataType) -> PlanError {
     PlanError::analysis(format!(
         "cannot resolve arithmetic '{op}' with operand types {} and {}",

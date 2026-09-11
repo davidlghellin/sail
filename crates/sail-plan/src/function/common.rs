@@ -11,7 +11,7 @@ use datafusion_expr::{
     WindowFunctionDefinition, WindowUDF, cast, expr, lit,
 };
 use sail_catalog::utils::quote_name_if_needed;
-use sail_common::spec::SAIL_SPARK_UDT_METADATA_KEY;
+use sail_common::spec::{SAIL_SPARK_UDT_METADATA_KEY, SPARK_METADATA_JSON_KEY};
 use sail_common_datafusion::utils::items::ItemTaker;
 use sail_common_datafusion::variant::{is_marked_variant_storage_type, is_variant_storage_field};
 use sail_function::scalar::variant::spark_cast_to_variant::SparkCastToVariant;
@@ -546,6 +546,18 @@ pub(crate) fn spark_field_type_name(field: &Field) -> String {
     }
 }
 
+/// The comment on a struct field, read the way Spark's `StructField.getComment` reads it. A SQL
+/// `COMMENT` lands under the plain `comment` key; a DataFrame schema carries the whole Spark
+/// metadata as JSON under [`SPARK_METADATA_JSON_KEY`].
+fn spark_field_comment(field: &Field) -> Option<String> {
+    if let Some(comment) = field.metadata().get("comment") {
+        return Some(comment.clone());
+    }
+    let metadata = field.metadata().get(SPARK_METADATA_JSON_KEY)?;
+    let metadata: serde_json::Value = serde_json::from_str(metadata).ok()?;
+    metadata.get("comment")?.as_str().map(str::to_owned)
+}
+
 /// The Spark type name (`INT`, `STRING`, `INTERVAL DAY TO SECOND`, ...), for error messages that
 /// quote operand types rather than leaking Arrow's `Debug` (`Int32`, `Utf8`, `Interval(...)`).
 pub(crate) fn spark_type_name(data_type: &DataType) -> String {
@@ -562,13 +574,13 @@ pub(crate) fn spark_type_name(data_type: &DataType) -> String {
         DataType::Int64 => "BIGINT".to_string(),
         DataType::Float32 => "FLOAT".to_string(),
         DataType::Float64 => "DOUBLE".to_string(),
-        // Spark has no unsigned or half-float type, but Sail can surface them (e.g. from
-        // Parquet) and the caller's gate is `is_numeric()`, which admits them. Name them
-        // the way the plan formatter does rather than leaking Arrow's `Debug`.
-        DataType::UInt8 => "UNSIGNED TINYINT".to_string(),
-        DataType::UInt16 => "UNSIGNED SMALLINT".to_string(),
-        DataType::UInt32 => "UNSIGNED INT".to_string(),
-        DataType::UInt64 => "UNSIGNED BIGINT".to_string(),
+        // Spark has no unsigned type: its Parquet reader widens each unsigned width one step so
+        // every value stays representable (`ParquetSchemaConverter.scala:290,311`), and the widened
+        // type is the one Spark names. Spark has no half-float either.
+        DataType::UInt8 => "SMALLINT".to_string(),
+        DataType::UInt16 => "INT".to_string(),
+        DataType::UInt32 => "BIGINT".to_string(),
+        DataType::UInt64 => "DECIMAL(20,0)".to_string(),
         DataType::Float16 => "HALF FLOAT".to_string(),
         // The non-numeric types the arithmetic operand-reject error surfaces, named the Spark
         // way rather than leaking Arrow's `Debug` (`Utf8`, `Boolean`, `Interval(...)`).
@@ -626,10 +638,15 @@ pub(crate) fn spark_type_name(data_type: &DataType) -> String {
                 .iter()
                 .map(|field| {
                     let nullability = if field.is_nullable() { "" } else { " NOT NULL" };
+                    // `StructField.sql` (`StructField.scala:289-301`): the comment follows
+                    // NOT NULL, with only the single quote escaped.
+                    let comment = spark_field_comment(field)
+                        .map(|comment| format!(" COMMENT '{}'", comment.replace('\'', "\\'")))
+                        .unwrap_or_default();
                     // Spark back-quotes a nested field name that is not a plain
                     // identifier, doubling any back-quote inside it.
                     format!(
-                        "{}: {}{nullability}",
+                        "{}: {}{nullability}{comment}",
                         quote_name_if_needed(field.name()),
                         spark_type_name(field.data_type())
                     )

@@ -224,8 +224,6 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | case | l | r |
         | unull + str | NULL | '2' |
         | unull + date | NULL | DATE'2024-01-15' |
-        | unull + ts | NULL | TIMESTAMP'2024-01-15 12:00:00' |
-        | unull + ts_ntz | NULL | TIMESTAMP_NTZ'2024-01-15 12:00:00' |
         | null + str | CAST(NULL AS INT) | '2' |
         | tinyint + str | CAST(2 AS TINYINT) | '2' |
         | smallint + str | CAST(2 AS SMALLINT) | '2' |
@@ -246,8 +244,6 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | str + str | '2' | '2' |
         | str + calendar | '2' | make_interval(0,1,0,1,0,0,0) |
         | date + unull | DATE'2024-01-15' | NULL |
-        | ts + unull | TIMESTAMP'2024-01-15 12:00:00' | NULL |
-        | ts_ntz + unull | TIMESTAMP_NTZ'2024-01-15 12:00:00' | NULL |
         | calendar + str | make_interval(0,1,0,1,0,0,0) | '2' |
 
     @spark-4
@@ -285,7 +281,7 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
 
     @sail-bug
     @spark-4.1
-    Scenario Outline: plus ansi-off: pair resolves, TIME operand (Sail rejects it): <case>
+    Scenario Outline: plus ansi-off: post-4.0 datetime pair resolves (Sail rejects it): <case>
       Given config spark.sql.ansi.enabled = false
       And config spark.sql.timeType.enabled = true
       When query
@@ -298,6 +294,10 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
 
       Examples:
         | case | l | r |
+        | unull + ts | NULL | TIMESTAMP'2024-01-15 12:00:00' |
+        | unull + ts_ntz | NULL | TIMESTAMP_NTZ'2024-01-15 12:00:00' |
+        | ts + unull | TIMESTAMP'2024-01-15 12:00:00' | NULL |
+        | ts_ntz + unull | TIMESTAMP_NTZ'2024-01-15 12:00:00' | NULL |
         | time + ival_d | TIME '12:00:00' | INTERVAL '2' DAY |
         | time + ival_dt | TIME '12:00:00' | INTERVAL '25' HOUR |
         | time + ival_ds | TIME '12:00:00' | INTERVAL '1 02:03:04' DAY TO SECOND |
@@ -505,8 +505,6 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
       Examples:
         | case | l | r |
         | unull + date | NULL | DATE'2024-01-15' |
-        | unull + ts | NULL | TIMESTAMP'2024-01-15 12:00:00' |
-        | unull + ts_ntz | NULL | TIMESTAMP_NTZ'2024-01-15 12:00:00' |
         | null + str | CAST(NULL AS INT) | '2' |
         | tinyint + str | CAST(2 AS TINYINT) | '2' |
         | smallint + str | CAST(2 AS SMALLINT) | '2' |
@@ -525,8 +523,6 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | str + dec | '2' | CAST(2 AS DECIMAL(10,2)) |
         | str + calendar | '2' | make_interval(0,1,0,1,0,0,0) |
         | date + unull | DATE'2024-01-15' | NULL |
-        | ts + unull | TIMESTAMP'2024-01-15 12:00:00' | NULL |
-        | ts_ntz + unull | TIMESTAMP_NTZ'2024-01-15 12:00:00' | NULL |
         | calendar + str | make_interval(0,1,0,1,0,0,0) | '2' |
 
     @spark-4
@@ -564,7 +560,7 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
 
     @sail-bug
     @spark-4.1
-    Scenario Outline: plus ansi-on: pair resolves, TIME operand (Sail rejects it): <case>
+    Scenario Outline: plus ansi-on: post-4.0 datetime pair resolves (Sail rejects it): <case>
       Given config spark.sql.ansi.enabled = true
       And config spark.sql.timeType.enabled = true
       When query
@@ -577,6 +573,10 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
 
       Examples:
         | case | l | r |
+        | unull + ts | NULL | TIMESTAMP'2024-01-15 12:00:00' |
+        | unull + ts_ntz | NULL | TIMESTAMP_NTZ'2024-01-15 12:00:00' |
+        | ts + unull | TIMESTAMP'2024-01-15 12:00:00' | NULL |
+        | ts_ntz + unull | TIMESTAMP_NTZ'2024-01-15 12:00:00' | NULL |
         | time + ival_d | TIME '12:00:00' | INTERVAL '2' DAY |
         | time + ival_dt | TIME '12:00:00' | INTERVAL '25' HOUR |
         | time + ival_ds | TIME '12:00:00' | INTERVAL '1 02:03:04' DAY TO SECOND |
