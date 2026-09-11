@@ -1219,26 +1219,89 @@ fn rejects_udt_operand(
     right: &Expr,
     schema: &DFSchemaRef,
 ) -> Option<PlanError> {
-    let field = |expr: &Expr| expr.to_field(schema).ok().map(|(_, field)| field);
-    let (left, right) = (field(left), field(right));
-    if !left
-        .iter()
-        .chain(right.iter())
-        .any(|field| is_spark_udt_field(field))
-    {
+    let (left_udt, right_udt) = (
+        operand_udt_field(left, schema),
+        operand_udt_field(right, schema),
+    );
+    if left_udt.is_none() && right_udt.is_none() {
         return None;
     }
-    let name = |field: &Option<FieldRef>| {
-        field.as_ref().map_or_else(
-            || "UNKNOWN".to_string(),
-            |field| spark_field_type_name(field),
-        )
+    let name = |expr: &Expr, udt: Option<FieldRef>| {
+        udt.or_else(|| expr.to_field(schema).ok().map(|(_, field)| field))
+            .map_or_else(
+                || "UNKNOWN".to_string(),
+                |field| spark_field_type_name(&field),
+            )
     };
     Some(PlanError::analysis(format!(
         "cannot resolve arithmetic '{op}' with operand types {} and {}",
-        name(&left),
-        name(&right)
+        name(left, left_udt),
+        name(right, right_udt)
     )))
+}
+
+/// The UDT field an arithmetic operand evaluates to. Only a column (or a struct field of one)
+/// carries the UDT metadata on its own field; the expressions that return one of their inputs
+/// unchanged -- `coalesce`/`nvl`, `nullif`, `CASE`/`if`, and an array or map element access --
+/// build their result field without it, so they are looked through to the value they return.
+fn operand_udt_field(expr: &Expr, schema: &DFSchemaRef) -> Option<FieldRef> {
+    if let Ok((_, field)) = expr.to_field(schema)
+        && is_spark_udt_field(&field)
+    {
+        return Some(field);
+    }
+    match expr {
+        Expr::Alias(alias) => operand_udt_field(&alias.expr, schema),
+        Expr::Case(case) => case
+            .when_then_expr
+            .iter()
+            .map(|(_, then)| then.as_ref())
+            .chain(case.else_expr.as_deref())
+            .find_map(|branch| operand_udt_field(branch, schema)),
+        Expr::ScalarFunction(function) => match function.func.name() {
+            "coalesce" | "nvl" => function
+                .args
+                .iter()
+                .find_map(|arg| operand_udt_field(arg, schema)),
+            // `nullif(a, b)` returns `a` or NULL.
+            "nullif" => function
+                .args
+                .first()
+                .and_then(|arg| operand_udt_field(arg, schema)),
+            "array_element" => function
+                .args
+                .first()
+                .and_then(|collection| collection_element_udt_field(collection, schema)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The UDT element field of an array, or of the value list `map_extract` pulls out of a map. The
+/// resolver builds both element fields through `resolve_field`, so they keep the UDT metadata.
+fn collection_element_udt_field(collection: &Expr, schema: &DFSchemaRef) -> Option<FieldRef> {
+    if let Expr::ScalarFunction(function) = collection
+        && function.func.name() == "map_extract"
+    {
+        return match function.args.first()?.get_type(schema).ok()? {
+            DataType::Map(entries, _) => match entries.data_type() {
+                DataType::Struct(fields) if fields.len() == 2 => {
+                    Some(Arc::clone(&fields[1])).filter(|field| is_spark_udt_field(field))
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+    }
+    match collection.get_type(schema).ok()? {
+        DataType::List(field)
+        | DataType::LargeList(field)
+        | DataType::FixedSizeList(field, _)
+        | DataType::ListView(field)
+        | DataType::LargeListView(field) => Some(field).filter(|field| is_spark_udt_field(field)),
+        _ => None,
+    }
 }
 
 /// The plan-time rejection Spark raises at analysis for an arithmetic operand pair it cannot
