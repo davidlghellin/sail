@@ -19,14 +19,14 @@ def test_udt_operand_is_rejected(spark, udt_view, op):
     # A UDT is none of the input types the arithmetic operators accept, whatever
     # it is stored as -- this one is stored as STRING, which on its own would let
     # `/` through.
-    with pytest.raises(AnalysisException, match="(?i)cannot resolve"):
-        spark.sql(f"SELECT a {op} 1 FROM {udt_view}").collect()
+    with pytest.raises(AnalysisException, match=r"(?i)cannot resolve"):
+        spark.sql(f"SELECT a {op} 1 FROM {udt_view}").collect()  # noqa: S608
 
 
 def test_udt_operand_is_named_udt_not_its_storage_type(spark, udt_view):
     # Both engines spell it exactly this way.
     with pytest.raises(AnalysisException) as excinfo:
-        spark.sql(f"SELECT a + 1 FROM {udt_view}").collect()
+        spark.sql(f"SELECT a + 1 FROM {udt_view}").collect()  # noqa: S608
     assert 'UDT("STRING")' in str(excinfo.value)
 
 

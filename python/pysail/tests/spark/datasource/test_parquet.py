@@ -734,20 +734,20 @@ def test_parquet_arithmetic_operand_rejection(spark, tmp_path):
 
     # BINARY is not one of the input types any operator accepts.
     for op in ["+", "-", "*", "/", "%"]:
-        with pytest.raises(AnalysisException, match="(?i)cannot resolve"):
-            spark.sql(f"SELECT fsb {op} 1 FROM arithmetic_operands").collect()
+        with pytest.raises(AnalysisException, match=r"(?i)cannot resolve"):
+            spark.sql(f"SELECT fsb {op} 1 FROM arithmetic_operands").collect()  # noqa: S608
 
     # `DateAdd` takes a BYTE, SHORT or INT offset (`datetimeExpressions.scala:331`).
     # Both engines accept the two narrow widths and reject the two wide ones, by
     # different routes: Spark reads u32 as BIGINT and rejects the width, Sail
     # keeps it unsigned and rejects the signedness.
     for column in ["u8", "u16"]:
-        assert spark.sql(
-            f"SELECT DATE'2024-01-01' + {column} AS r FROM arithmetic_operands"
-        ).collect() == [Row(r=date(2024, 1, 2))]
+        query = f"SELECT DATE'2024-01-01' + {column} AS r FROM arithmetic_operands"  # noqa: S608
+        assert spark.sql(query).collect() == [Row(r=date(2024, 1, 2))]
     for column in ["u32", "u64"]:
-        with pytest.raises(AnalysisException, match="(?i)cannot resolve"):
-            spark.sql(f"SELECT DATE'2024-01-01' + {column} AS r FROM arithmetic_operands").collect()
+        query = f"SELECT DATE'2024-01-01' + {column} AS r FROM arithmetic_operands"  # noqa: S608
+        with pytest.raises(AnalysisException, match=r"(?i)cannot resolve"):
+            spark.sql(query).collect()
 
     # The same unsigned columns stay usable in ordinary numeric arithmetic.
     assert spark.sql("SELECT u32 * 2 AS r FROM arithmetic_operands").collect() == [Row(r=2)]
