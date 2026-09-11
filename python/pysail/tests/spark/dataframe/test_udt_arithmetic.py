@@ -2,6 +2,7 @@ import pytest
 from pyspark.errors import AnalysisException
 from pyspark.sql.types import ArrayType, MapType, StringType, StructType
 
+from pysail.testing.spark.utils.common import is_jvm_spark
 from pysail.tests.spark.dataframe.udt import UnnamedPythonUDT
 
 OPERATORS = ["+", "-", "*", "/", "%"]
@@ -73,3 +74,38 @@ def test_udt_reached_through_an_expression_is_rejected(spark, operand):
     spark.createDataFrame(data=[], schema=schema).createOrReplaceTempView("udt_expression_operand")
     with pytest.raises(AnalysisException, match=r"(?i)cannot resolve"):
         spark.sql(f"SELECT {operand} / 1 FROM udt_expression_operand").collect()  # noqa: S608
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        pytest.param("SELECT first(a) / 1 FROM udt_relation_operand", id="first"),
+        pytest.param("SELECT last(a) / 1 FROM udt_relation_operand", id="last"),
+        pytest.param("SELECT any_value(a) / 1 FROM udt_relation_operand", id="any_value"),
+        pytest.param("SELECT lag(a) OVER (ORDER BY k) / 1 FROM udt_relation_operand", id="lag"),
+        pytest.param("SELECT lead(a) OVER (ORDER BY k) / 1 FROM udt_relation_operand", id="lead"),
+        pytest.param("SELECT first_value(a) OVER (ORDER BY k) / 1 FROM udt_relation_operand", id="first_value"),
+        pytest.param(
+            "SELECT e / 1 FROM (SELECT explode(arr) AS e FROM udt_relation_operand)",
+            id="explode",
+            marks=pytest.mark.xfail(
+                not is_jvm_spark(),
+                strict=True,
+                reason="the generator builds its output column without the UDT metadata",
+            ),
+        ),
+        pytest.param(
+            "SELECT u / 1 FROM "
+            "(SELECT a AS u FROM udt_relation_operand UNION ALL SELECT a AS u FROM udt_relation_operand)",
+            id="union",
+        ),
+    ],
+)
+def test_udt_reached_through_an_aggregate_window_or_relation_is_rejected(spark, query):
+    # A UDT that comes out of an aggregate, a window function, a generator or a set operation is
+    # still a UDT in Spark, so `/ 1` fails analysis.
+    udt = UnnamedPythonUDT()
+    schema = StructType().add("k", "integer").add("a", udt).add("arr", ArrayType(udt))
+    spark.createDataFrame(data=[], schema=schema).createOrReplaceTempView("udt_relation_operand")
+    with pytest.raises(AnalysisException, match=r"(?i)cannot resolve"):
+        spark.sql(query).collect()
