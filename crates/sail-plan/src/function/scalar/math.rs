@@ -1242,8 +1242,9 @@ fn rejects_udt_operand(
 
 /// The UDT field an arithmetic operand evaluates to. Only a column (or a struct field of one)
 /// carries the UDT metadata on its own field; the expressions that return one of their inputs
-/// unchanged -- `coalesce`/`nvl`, `nullif`, `CASE`/`if`, and an array or map element access --
-/// build their result field without it, so they are looked through to the value they return.
+/// unchanged -- `coalesce`/`nvl`, `nvl2`, `nullif`, `CASE`/`if`, and an array or map element
+/// access -- build their result field without it, so they are looked through to the value they
+/// return.
 fn operand_udt_field(expr: &Expr, schema: &DFSchemaRef) -> Option<FieldRef> {
     if let Ok((_, field)) = expr.to_field(schema)
         && is_spark_udt_field(&field)
@@ -1262,6 +1263,12 @@ fn operand_udt_field(expr: &Expr, schema: &DFSchemaRef) -> Option<FieldRef> {
             "coalesce" | "nvl" => function
                 .args
                 .iter()
+                .find_map(|arg| operand_udt_field(arg, schema)),
+            // `nvl2(x, y, z)` returns `y` or `z`.
+            "nvl2" => function
+                .args
+                .iter()
+                .skip(1)
                 .find_map(|arg| operand_udt_field(arg, schema)),
             // `nullif(a, b)` returns `a` or NULL.
             "nullif" => function

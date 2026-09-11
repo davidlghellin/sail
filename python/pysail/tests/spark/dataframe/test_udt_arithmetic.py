@@ -48,6 +48,7 @@ def test_nested_udt_is_named_by_its_storage_type(spark):
         pytest.param("s.u", id="struct-field"),
         pytest.param("coalesce(a, a)", id="coalesce"),
         pytest.param("nvl(a, a)", id="nvl"),
+        pytest.param("nvl2(a, a, a)", id="nvl2"),
         pytest.param("if(true, a, a)", id="if"),
         pytest.param("CASE WHEN true THEN a ELSE a END", id="case"),
         pytest.param("nullif(a, a)", id="nullif"),
