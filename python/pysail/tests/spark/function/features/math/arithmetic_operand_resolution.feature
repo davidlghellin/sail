@@ -1247,6 +1247,60 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | ival_ds * double | INTERVAL '1 02:03:04' DAY TO SECOND | CAST(2 AS DOUBLE) |
         | ival_ds * dec | INTERVAL '1 02:03:04' DAY TO SECOND | CAST(2 AS DECIMAL(10,2)) |
         | ival_ds * str | INTERVAL '1 02:03:04' DAY TO SECOND | '2' |
+        | unull * ival_m | NULL | INTERVAL '2' MONTH |
+        | unull * ival_y | NULL | INTERVAL '2' YEAR |
+        | unull * ival_ym | NULL | INTERVAL '1-2' YEAR TO MONTH |
+        | null * ival_m | CAST(NULL AS INT) | INTERVAL '2' MONTH |
+        | null * ival_y | CAST(NULL AS INT) | INTERVAL '2' YEAR |
+        | null * ival_ym | CAST(NULL AS INT) | INTERVAL '1-2' YEAR TO MONTH |
+        | tinyint * ival_m | CAST(2 AS TINYINT) | INTERVAL '2' MONTH |
+        | tinyint * ival_y | CAST(2 AS TINYINT) | INTERVAL '2' YEAR |
+        | tinyint * ival_ym | CAST(2 AS TINYINT) | INTERVAL '1-2' YEAR TO MONTH |
+        | smallint * ival_m | CAST(2 AS SMALLINT) | INTERVAL '2' MONTH |
+        | smallint * ival_y | CAST(2 AS SMALLINT) | INTERVAL '2' YEAR |
+        | smallint * ival_ym | CAST(2 AS SMALLINT) | INTERVAL '1-2' YEAR TO MONTH |
+        | int * ival_m | CAST(2 AS INT) | INTERVAL '2' MONTH |
+        | int * ival_y | CAST(2 AS INT) | INTERVAL '2' YEAR |
+        | int * ival_ym | CAST(2 AS INT) | INTERVAL '1-2' YEAR TO MONTH |
+        | bigint * ival_m | CAST(2 AS BIGINT) | INTERVAL '2' MONTH |
+        | bigint * ival_y | CAST(2 AS BIGINT) | INTERVAL '2' YEAR |
+        | bigint * ival_ym | CAST(2 AS BIGINT) | INTERVAL '1-2' YEAR TO MONTH |
+        | float * ival_m | CAST(2 AS FLOAT) | INTERVAL '2' MONTH |
+        | float * ival_y | CAST(2 AS FLOAT) | INTERVAL '2' YEAR |
+        | float * ival_ym | CAST(2 AS FLOAT) | INTERVAL '1-2' YEAR TO MONTH |
+        | double * ival_m | CAST(2 AS DOUBLE) | INTERVAL '2' MONTH |
+        | double * ival_y | CAST(2 AS DOUBLE) | INTERVAL '2' YEAR |
+        | double * ival_ym | CAST(2 AS DOUBLE) | INTERVAL '1-2' YEAR TO MONTH |
+        | dec * ival_m | CAST(2 AS DECIMAL(10,2)) | INTERVAL '2' MONTH |
+        | dec * ival_y | CAST(2 AS DECIMAL(10,2)) | INTERVAL '2' YEAR |
+        | dec * ival_ym | CAST(2 AS DECIMAL(10,2)) | INTERVAL '1-2' YEAR TO MONTH |
+        | ival_m * unull | INTERVAL '2' MONTH | NULL |
+        | ival_m * null | INTERVAL '2' MONTH | CAST(NULL AS INT) |
+        | ival_m * tinyint | INTERVAL '2' MONTH | CAST(2 AS TINYINT) |
+        | ival_m * smallint | INTERVAL '2' MONTH | CAST(2 AS SMALLINT) |
+        | ival_m * int | INTERVAL '2' MONTH | CAST(2 AS INT) |
+        | ival_m * bigint | INTERVAL '2' MONTH | CAST(2 AS BIGINT) |
+        | ival_m * float | INTERVAL '2' MONTH | CAST(2 AS FLOAT) |
+        | ival_m * double | INTERVAL '2' MONTH | CAST(2 AS DOUBLE) |
+        | ival_m * dec | INTERVAL '2' MONTH | CAST(2 AS DECIMAL(10,2)) |
+        | ival_y * unull | INTERVAL '2' YEAR | NULL |
+        | ival_y * null | INTERVAL '2' YEAR | CAST(NULL AS INT) |
+        | ival_y * tinyint | INTERVAL '2' YEAR | CAST(2 AS TINYINT) |
+        | ival_y * smallint | INTERVAL '2' YEAR | CAST(2 AS SMALLINT) |
+        | ival_y * int | INTERVAL '2' YEAR | CAST(2 AS INT) |
+        | ival_y * bigint | INTERVAL '2' YEAR | CAST(2 AS BIGINT) |
+        | ival_y * float | INTERVAL '2' YEAR | CAST(2 AS FLOAT) |
+        | ival_y * double | INTERVAL '2' YEAR | CAST(2 AS DOUBLE) |
+        | ival_y * dec | INTERVAL '2' YEAR | CAST(2 AS DECIMAL(10,2)) |
+        | ival_ym * unull | INTERVAL '1-2' YEAR TO MONTH | NULL |
+        | ival_ym * null | INTERVAL '1-2' YEAR TO MONTH | CAST(NULL AS INT) |
+        | ival_ym * tinyint | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS TINYINT) |
+        | ival_ym * smallint | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS SMALLINT) |
+        | ival_ym * int | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS INT) |
+        | ival_ym * bigint | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS BIGINT) |
+        | ival_ym * float | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS FLOAT) |
+        | ival_ym * double | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS DOUBLE) |
+        | ival_ym * dec | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS DECIMAL(10,2)) |
 
     @sail-bug
     Scenario Outline: times ansi-off: pair resolves (Sail rejects it): <case>
@@ -1263,49 +1317,22 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
       Examples:
         | case | l | r |
         | unull * str | NULL | '2' |
-        | unull * ival_m | NULL | INTERVAL '2' MONTH |
-        | unull * ival_y | NULL | INTERVAL '2' YEAR |
-        | unull * ival_ym | NULL | INTERVAL '1-2' YEAR TO MONTH |
         | unull * calendar | NULL | make_interval(0,1,0,1,0,0,0) |
         | null * str | CAST(NULL AS INT) | '2' |
-        | null * ival_m | CAST(NULL AS INT) | INTERVAL '2' MONTH |
-        | null * ival_y | CAST(NULL AS INT) | INTERVAL '2' YEAR |
-        | null * ival_ym | CAST(NULL AS INT) | INTERVAL '1-2' YEAR TO MONTH |
         | null * calendar | CAST(NULL AS INT) | make_interval(0,1,0,1,0,0,0) |
         | tinyint * str | CAST(2 AS TINYINT) | '2' |
-        | tinyint * ival_m | CAST(2 AS TINYINT) | INTERVAL '2' MONTH |
-        | tinyint * ival_y | CAST(2 AS TINYINT) | INTERVAL '2' YEAR |
-        | tinyint * ival_ym | CAST(2 AS TINYINT) | INTERVAL '1-2' YEAR TO MONTH |
         | tinyint * calendar | CAST(2 AS TINYINT) | make_interval(0,1,0,1,0,0,0) |
         | smallint * str | CAST(2 AS SMALLINT) | '2' |
-        | smallint * ival_m | CAST(2 AS SMALLINT) | INTERVAL '2' MONTH |
-        | smallint * ival_y | CAST(2 AS SMALLINT) | INTERVAL '2' YEAR |
-        | smallint * ival_ym | CAST(2 AS SMALLINT) | INTERVAL '1-2' YEAR TO MONTH |
         | smallint * calendar | CAST(2 AS SMALLINT) | make_interval(0,1,0,1,0,0,0) |
         | int * str | CAST(2 AS INT) | '2' |
-        | int * ival_m | CAST(2 AS INT) | INTERVAL '2' MONTH |
-        | int * ival_y | CAST(2 AS INT) | INTERVAL '2' YEAR |
-        | int * ival_ym | CAST(2 AS INT) | INTERVAL '1-2' YEAR TO MONTH |
         | int * calendar | CAST(2 AS INT) | make_interval(0,1,0,1,0,0,0) |
         | bigint * str | CAST(2 AS BIGINT) | '2' |
-        | bigint * ival_m | CAST(2 AS BIGINT) | INTERVAL '2' MONTH |
-        | bigint * ival_y | CAST(2 AS BIGINT) | INTERVAL '2' YEAR |
-        | bigint * ival_ym | CAST(2 AS BIGINT) | INTERVAL '1-2' YEAR TO MONTH |
         | bigint * calendar | CAST(2 AS BIGINT) | make_interval(0,1,0,1,0,0,0) |
         | float * str | CAST(2 AS FLOAT) | '2' |
-        | float * ival_m | CAST(2 AS FLOAT) | INTERVAL '2' MONTH |
-        | float * ival_y | CAST(2 AS FLOAT) | INTERVAL '2' YEAR |
-        | float * ival_ym | CAST(2 AS FLOAT) | INTERVAL '1-2' YEAR TO MONTH |
         | float * calendar | CAST(2 AS FLOAT) | make_interval(0,1,0,1,0,0,0) |
         | double * str | CAST(2 AS DOUBLE) | '2' |
-        | double * ival_m | CAST(2 AS DOUBLE) | INTERVAL '2' MONTH |
-        | double * ival_y | CAST(2 AS DOUBLE) | INTERVAL '2' YEAR |
-        | double * ival_ym | CAST(2 AS DOUBLE) | INTERVAL '1-2' YEAR TO MONTH |
         | double * calendar | CAST(2 AS DOUBLE) | make_interval(0,1,0,1,0,0,0) |
         | dec * str | CAST(2 AS DECIMAL(10,2)) | '2' |
-        | dec * ival_m | CAST(2 AS DECIMAL(10,2)) | INTERVAL '2' MONTH |
-        | dec * ival_y | CAST(2 AS DECIMAL(10,2)) | INTERVAL '2' YEAR |
-        | dec * ival_ym | CAST(2 AS DECIMAL(10,2)) | INTERVAL '1-2' YEAR TO MONTH |
         | dec * calendar | CAST(2 AS DECIMAL(10,2)) | make_interval(0,1,0,1,0,0,0) |
         | str * unull | '2' | NULL |
         | str * null | '2' | CAST(NULL AS INT) |
@@ -1321,35 +1348,8 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | str * ival_y | '2' | INTERVAL '2' YEAR |
         | str * ival_ym | '2' | INTERVAL '1-2' YEAR TO MONTH |
         | str * calendar | '2' | make_interval(0,1,0,1,0,0,0) |
-        | ival_m * unull | INTERVAL '2' MONTH | NULL |
-        | ival_m * null | INTERVAL '2' MONTH | CAST(NULL AS INT) |
-        | ival_m * tinyint | INTERVAL '2' MONTH | CAST(2 AS TINYINT) |
-        | ival_m * smallint | INTERVAL '2' MONTH | CAST(2 AS SMALLINT) |
-        | ival_m * int | INTERVAL '2' MONTH | CAST(2 AS INT) |
-        | ival_m * bigint | INTERVAL '2' MONTH | CAST(2 AS BIGINT) |
-        | ival_m * float | INTERVAL '2' MONTH | CAST(2 AS FLOAT) |
-        | ival_m * double | INTERVAL '2' MONTH | CAST(2 AS DOUBLE) |
-        | ival_m * dec | INTERVAL '2' MONTH | CAST(2 AS DECIMAL(10,2)) |
         | ival_m * str | INTERVAL '2' MONTH | '2' |
-        | ival_y * unull | INTERVAL '2' YEAR | NULL |
-        | ival_y * null | INTERVAL '2' YEAR | CAST(NULL AS INT) |
-        | ival_y * tinyint | INTERVAL '2' YEAR | CAST(2 AS TINYINT) |
-        | ival_y * smallint | INTERVAL '2' YEAR | CAST(2 AS SMALLINT) |
-        | ival_y * int | INTERVAL '2' YEAR | CAST(2 AS INT) |
-        | ival_y * bigint | INTERVAL '2' YEAR | CAST(2 AS BIGINT) |
-        | ival_y * float | INTERVAL '2' YEAR | CAST(2 AS FLOAT) |
-        | ival_y * double | INTERVAL '2' YEAR | CAST(2 AS DOUBLE) |
-        | ival_y * dec | INTERVAL '2' YEAR | CAST(2 AS DECIMAL(10,2)) |
         | ival_y * str | INTERVAL '2' YEAR | '2' |
-        | ival_ym * unull | INTERVAL '1-2' YEAR TO MONTH | NULL |
-        | ival_ym * null | INTERVAL '1-2' YEAR TO MONTH | CAST(NULL AS INT) |
-        | ival_ym * tinyint | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS TINYINT) |
-        | ival_ym * smallint | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS SMALLINT) |
-        | ival_ym * int | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS INT) |
-        | ival_ym * bigint | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS BIGINT) |
-        | ival_ym * float | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS FLOAT) |
-        | ival_ym * double | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS DOUBLE) |
-        | ival_ym * dec | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS DECIMAL(10,2)) |
         | ival_ym * str | INTERVAL '1-2' YEAR TO MONTH | '2' |
         | calendar * unull | make_interval(0,1,0,1,0,0,0) | NULL |
         | calendar * null | make_interval(0,1,0,1,0,0,0) | CAST(NULL AS INT) |
@@ -1533,6 +1533,60 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | ival_ds * double | INTERVAL '1 02:03:04' DAY TO SECOND | CAST(2 AS DOUBLE) |
         | ival_ds * dec | INTERVAL '1 02:03:04' DAY TO SECOND | CAST(2 AS DECIMAL(10,2)) |
         | ival_ds * str | INTERVAL '1 02:03:04' DAY TO SECOND | '2' |
+        | unull * ival_m | NULL | INTERVAL '2' MONTH |
+        | unull * ival_y | NULL | INTERVAL '2' YEAR |
+        | unull * ival_ym | NULL | INTERVAL '1-2' YEAR TO MONTH |
+        | null * ival_m | CAST(NULL AS INT) | INTERVAL '2' MONTH |
+        | null * ival_y | CAST(NULL AS INT) | INTERVAL '2' YEAR |
+        | null * ival_ym | CAST(NULL AS INT) | INTERVAL '1-2' YEAR TO MONTH |
+        | tinyint * ival_m | CAST(2 AS TINYINT) | INTERVAL '2' MONTH |
+        | tinyint * ival_y | CAST(2 AS TINYINT) | INTERVAL '2' YEAR |
+        | tinyint * ival_ym | CAST(2 AS TINYINT) | INTERVAL '1-2' YEAR TO MONTH |
+        | smallint * ival_m | CAST(2 AS SMALLINT) | INTERVAL '2' MONTH |
+        | smallint * ival_y | CAST(2 AS SMALLINT) | INTERVAL '2' YEAR |
+        | smallint * ival_ym | CAST(2 AS SMALLINT) | INTERVAL '1-2' YEAR TO MONTH |
+        | int * ival_m | CAST(2 AS INT) | INTERVAL '2' MONTH |
+        | int * ival_y | CAST(2 AS INT) | INTERVAL '2' YEAR |
+        | int * ival_ym | CAST(2 AS INT) | INTERVAL '1-2' YEAR TO MONTH |
+        | bigint * ival_m | CAST(2 AS BIGINT) | INTERVAL '2' MONTH |
+        | bigint * ival_y | CAST(2 AS BIGINT) | INTERVAL '2' YEAR |
+        | bigint * ival_ym | CAST(2 AS BIGINT) | INTERVAL '1-2' YEAR TO MONTH |
+        | float * ival_m | CAST(2 AS FLOAT) | INTERVAL '2' MONTH |
+        | float * ival_y | CAST(2 AS FLOAT) | INTERVAL '2' YEAR |
+        | float * ival_ym | CAST(2 AS FLOAT) | INTERVAL '1-2' YEAR TO MONTH |
+        | double * ival_m | CAST(2 AS DOUBLE) | INTERVAL '2' MONTH |
+        | double * ival_y | CAST(2 AS DOUBLE) | INTERVAL '2' YEAR |
+        | double * ival_ym | CAST(2 AS DOUBLE) | INTERVAL '1-2' YEAR TO MONTH |
+        | dec * ival_m | CAST(2 AS DECIMAL(10,2)) | INTERVAL '2' MONTH |
+        | dec * ival_y | CAST(2 AS DECIMAL(10,2)) | INTERVAL '2' YEAR |
+        | dec * ival_ym | CAST(2 AS DECIMAL(10,2)) | INTERVAL '1-2' YEAR TO MONTH |
+        | ival_m * unull | INTERVAL '2' MONTH | NULL |
+        | ival_m * null | INTERVAL '2' MONTH | CAST(NULL AS INT) |
+        | ival_m * tinyint | INTERVAL '2' MONTH | CAST(2 AS TINYINT) |
+        | ival_m * smallint | INTERVAL '2' MONTH | CAST(2 AS SMALLINT) |
+        | ival_m * int | INTERVAL '2' MONTH | CAST(2 AS INT) |
+        | ival_m * bigint | INTERVAL '2' MONTH | CAST(2 AS BIGINT) |
+        | ival_m * float | INTERVAL '2' MONTH | CAST(2 AS FLOAT) |
+        | ival_m * double | INTERVAL '2' MONTH | CAST(2 AS DOUBLE) |
+        | ival_m * dec | INTERVAL '2' MONTH | CAST(2 AS DECIMAL(10,2)) |
+        | ival_y * unull | INTERVAL '2' YEAR | NULL |
+        | ival_y * null | INTERVAL '2' YEAR | CAST(NULL AS INT) |
+        | ival_y * tinyint | INTERVAL '2' YEAR | CAST(2 AS TINYINT) |
+        | ival_y * smallint | INTERVAL '2' YEAR | CAST(2 AS SMALLINT) |
+        | ival_y * int | INTERVAL '2' YEAR | CAST(2 AS INT) |
+        | ival_y * bigint | INTERVAL '2' YEAR | CAST(2 AS BIGINT) |
+        | ival_y * float | INTERVAL '2' YEAR | CAST(2 AS FLOAT) |
+        | ival_y * double | INTERVAL '2' YEAR | CAST(2 AS DOUBLE) |
+        | ival_y * dec | INTERVAL '2' YEAR | CAST(2 AS DECIMAL(10,2)) |
+        | ival_ym * unull | INTERVAL '1-2' YEAR TO MONTH | NULL |
+        | ival_ym * null | INTERVAL '1-2' YEAR TO MONTH | CAST(NULL AS INT) |
+        | ival_ym * tinyint | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS TINYINT) |
+        | ival_ym * smallint | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS SMALLINT) |
+        | ival_ym * int | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS INT) |
+        | ival_ym * bigint | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS BIGINT) |
+        | ival_ym * float | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS FLOAT) |
+        | ival_ym * double | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS DOUBLE) |
+        | ival_ym * dec | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS DECIMAL(10,2)) |
 
     @sail-bug
     Scenario Outline: times ansi-on: pair resolves (Sail rejects it): <case>
@@ -1548,49 +1602,22 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
 
       Examples:
         | case | l | r |
-        | unull * ival_m | NULL | INTERVAL '2' MONTH |
-        | unull * ival_y | NULL | INTERVAL '2' YEAR |
-        | unull * ival_ym | NULL | INTERVAL '1-2' YEAR TO MONTH |
         | unull * calendar | NULL | make_interval(0,1,0,1,0,0,0) |
         | null * str | CAST(NULL AS INT) | '2' |
-        | null * ival_m | CAST(NULL AS INT) | INTERVAL '2' MONTH |
-        | null * ival_y | CAST(NULL AS INT) | INTERVAL '2' YEAR |
-        | null * ival_ym | CAST(NULL AS INT) | INTERVAL '1-2' YEAR TO MONTH |
         | null * calendar | CAST(NULL AS INT) | make_interval(0,1,0,1,0,0,0) |
         | tinyint * str | CAST(2 AS TINYINT) | '2' |
-        | tinyint * ival_m | CAST(2 AS TINYINT) | INTERVAL '2' MONTH |
-        | tinyint * ival_y | CAST(2 AS TINYINT) | INTERVAL '2' YEAR |
-        | tinyint * ival_ym | CAST(2 AS TINYINT) | INTERVAL '1-2' YEAR TO MONTH |
         | tinyint * calendar | CAST(2 AS TINYINT) | make_interval(0,1,0,1,0,0,0) |
         | smallint * str | CAST(2 AS SMALLINT) | '2' |
-        | smallint * ival_m | CAST(2 AS SMALLINT) | INTERVAL '2' MONTH |
-        | smallint * ival_y | CAST(2 AS SMALLINT) | INTERVAL '2' YEAR |
-        | smallint * ival_ym | CAST(2 AS SMALLINT) | INTERVAL '1-2' YEAR TO MONTH |
         | smallint * calendar | CAST(2 AS SMALLINT) | make_interval(0,1,0,1,0,0,0) |
         | int * str | CAST(2 AS INT) | '2' |
-        | int * ival_m | CAST(2 AS INT) | INTERVAL '2' MONTH |
-        | int * ival_y | CAST(2 AS INT) | INTERVAL '2' YEAR |
-        | int * ival_ym | CAST(2 AS INT) | INTERVAL '1-2' YEAR TO MONTH |
         | int * calendar | CAST(2 AS INT) | make_interval(0,1,0,1,0,0,0) |
         | bigint * str | CAST(2 AS BIGINT) | '2' |
-        | bigint * ival_m | CAST(2 AS BIGINT) | INTERVAL '2' MONTH |
-        | bigint * ival_y | CAST(2 AS BIGINT) | INTERVAL '2' YEAR |
-        | bigint * ival_ym | CAST(2 AS BIGINT) | INTERVAL '1-2' YEAR TO MONTH |
         | bigint * calendar | CAST(2 AS BIGINT) | make_interval(0,1,0,1,0,0,0) |
         | float * str | CAST(2 AS FLOAT) | '2' |
-        | float * ival_m | CAST(2 AS FLOAT) | INTERVAL '2' MONTH |
-        | float * ival_y | CAST(2 AS FLOAT) | INTERVAL '2' YEAR |
-        | float * ival_ym | CAST(2 AS FLOAT) | INTERVAL '1-2' YEAR TO MONTH |
         | float * calendar | CAST(2 AS FLOAT) | make_interval(0,1,0,1,0,0,0) |
         | double * str | CAST(2 AS DOUBLE) | '2' |
-        | double * ival_m | CAST(2 AS DOUBLE) | INTERVAL '2' MONTH |
-        | double * ival_y | CAST(2 AS DOUBLE) | INTERVAL '2' YEAR |
-        | double * ival_ym | CAST(2 AS DOUBLE) | INTERVAL '1-2' YEAR TO MONTH |
         | double * calendar | CAST(2 AS DOUBLE) | make_interval(0,1,0,1,0,0,0) |
         | dec * str | CAST(2 AS DECIMAL(10,2)) | '2' |
-        | dec * ival_m | CAST(2 AS DECIMAL(10,2)) | INTERVAL '2' MONTH |
-        | dec * ival_y | CAST(2 AS DECIMAL(10,2)) | INTERVAL '2' YEAR |
-        | dec * ival_ym | CAST(2 AS DECIMAL(10,2)) | INTERVAL '1-2' YEAR TO MONTH |
         | dec * calendar | CAST(2 AS DECIMAL(10,2)) | make_interval(0,1,0,1,0,0,0) |
         | str * null | '2' | CAST(NULL AS INT) |
         | str * tinyint | '2' | CAST(2 AS TINYINT) |
@@ -1604,35 +1631,8 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | str * ival_y | '2' | INTERVAL '2' YEAR |
         | str * ival_ym | '2' | INTERVAL '1-2' YEAR TO MONTH |
         | str * calendar | '2' | make_interval(0,1,0,1,0,0,0) |
-        | ival_m * unull | INTERVAL '2' MONTH | NULL |
-        | ival_m * null | INTERVAL '2' MONTH | CAST(NULL AS INT) |
-        | ival_m * tinyint | INTERVAL '2' MONTH | CAST(2 AS TINYINT) |
-        | ival_m * smallint | INTERVAL '2' MONTH | CAST(2 AS SMALLINT) |
-        | ival_m * int | INTERVAL '2' MONTH | CAST(2 AS INT) |
-        | ival_m * bigint | INTERVAL '2' MONTH | CAST(2 AS BIGINT) |
-        | ival_m * float | INTERVAL '2' MONTH | CAST(2 AS FLOAT) |
-        | ival_m * double | INTERVAL '2' MONTH | CAST(2 AS DOUBLE) |
-        | ival_m * dec | INTERVAL '2' MONTH | CAST(2 AS DECIMAL(10,2)) |
         | ival_m * str | INTERVAL '2' MONTH | '2' |
-        | ival_y * unull | INTERVAL '2' YEAR | NULL |
-        | ival_y * null | INTERVAL '2' YEAR | CAST(NULL AS INT) |
-        | ival_y * tinyint | INTERVAL '2' YEAR | CAST(2 AS TINYINT) |
-        | ival_y * smallint | INTERVAL '2' YEAR | CAST(2 AS SMALLINT) |
-        | ival_y * int | INTERVAL '2' YEAR | CAST(2 AS INT) |
-        | ival_y * bigint | INTERVAL '2' YEAR | CAST(2 AS BIGINT) |
-        | ival_y * float | INTERVAL '2' YEAR | CAST(2 AS FLOAT) |
-        | ival_y * double | INTERVAL '2' YEAR | CAST(2 AS DOUBLE) |
-        | ival_y * dec | INTERVAL '2' YEAR | CAST(2 AS DECIMAL(10,2)) |
         | ival_y * str | INTERVAL '2' YEAR | '2' |
-        | ival_ym * unull | INTERVAL '1-2' YEAR TO MONTH | NULL |
-        | ival_ym * null | INTERVAL '1-2' YEAR TO MONTH | CAST(NULL AS INT) |
-        | ival_ym * tinyint | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS TINYINT) |
-        | ival_ym * smallint | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS SMALLINT) |
-        | ival_ym * int | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS INT) |
-        | ival_ym * bigint | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS BIGINT) |
-        | ival_ym * float | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS FLOAT) |
-        | ival_ym * double | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS DOUBLE) |
-        | ival_ym * dec | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS DECIMAL(10,2)) |
         | ival_ym * str | INTERVAL '1-2' YEAR TO MONTH | '2' |
         | calendar * unull | make_interval(0,1,0,1,0,0,0) | NULL |
         | calendar * null | make_interval(0,1,0,1,0,0,0) | CAST(NULL AS INT) |
@@ -1810,6 +1810,33 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | calendar / float | make_interval(0,1,0,1,0,0,0) | CAST(2 AS FLOAT) |
         | calendar / double | make_interval(0,1,0,1,0,0,0) | CAST(2 AS DOUBLE) |
         | calendar / str | make_interval(0,1,0,1,0,0,0) | '2' |
+        | ival_m / unull | INTERVAL '2' MONTH | NULL |
+        | ival_m / null | INTERVAL '2' MONTH | CAST(NULL AS INT) |
+        | ival_m / tinyint | INTERVAL '2' MONTH | CAST(2 AS TINYINT) |
+        | ival_m / smallint | INTERVAL '2' MONTH | CAST(2 AS SMALLINT) |
+        | ival_m / int | INTERVAL '2' MONTH | CAST(2 AS INT) |
+        | ival_m / bigint | INTERVAL '2' MONTH | CAST(2 AS BIGINT) |
+        | ival_m / float | INTERVAL '2' MONTH | CAST(2 AS FLOAT) |
+        | ival_m / double | INTERVAL '2' MONTH | CAST(2 AS DOUBLE) |
+        | ival_m / dec | INTERVAL '2' MONTH | CAST(2 AS DECIMAL(10,2)) |
+        | ival_y / unull | INTERVAL '2' YEAR | NULL |
+        | ival_y / null | INTERVAL '2' YEAR | CAST(NULL AS INT) |
+        | ival_y / tinyint | INTERVAL '2' YEAR | CAST(2 AS TINYINT) |
+        | ival_y / smallint | INTERVAL '2' YEAR | CAST(2 AS SMALLINT) |
+        | ival_y / int | INTERVAL '2' YEAR | CAST(2 AS INT) |
+        | ival_y / bigint | INTERVAL '2' YEAR | CAST(2 AS BIGINT) |
+        | ival_y / float | INTERVAL '2' YEAR | CAST(2 AS FLOAT) |
+        | ival_y / double | INTERVAL '2' YEAR | CAST(2 AS DOUBLE) |
+        | ival_y / dec | INTERVAL '2' YEAR | CAST(2 AS DECIMAL(10,2)) |
+        | ival_ym / unull | INTERVAL '1-2' YEAR TO MONTH | NULL |
+        | ival_ym / null | INTERVAL '1-2' YEAR TO MONTH | CAST(NULL AS INT) |
+        | ival_ym / tinyint | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS TINYINT) |
+        | ival_ym / smallint | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS SMALLINT) |
+        | ival_ym / int | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS INT) |
+        | ival_ym / bigint | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS BIGINT) |
+        | ival_ym / float | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS FLOAT) |
+        | ival_ym / double | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS DOUBLE) |
+        | ival_ym / dec | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS DECIMAL(10,2)) |
 
     @sail-bug
     Scenario Outline: divide ansi-off: pair resolves (Sail rejects it): <case>
@@ -1829,35 +1856,8 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | ival_d / dec | INTERVAL '2' DAY | CAST(2 AS DECIMAL(10,2)) |
         | ival_dt / dec | INTERVAL '25' HOUR | CAST(2 AS DECIMAL(10,2)) |
         | ival_ds / dec | INTERVAL '1 02:03:04' DAY TO SECOND | CAST(2 AS DECIMAL(10,2)) |
-        | ival_m / unull | INTERVAL '2' MONTH | NULL |
-        | ival_m / null | INTERVAL '2' MONTH | CAST(NULL AS INT) |
-        | ival_m / tinyint | INTERVAL '2' MONTH | CAST(2 AS TINYINT) |
-        | ival_m / smallint | INTERVAL '2' MONTH | CAST(2 AS SMALLINT) |
-        | ival_m / int | INTERVAL '2' MONTH | CAST(2 AS INT) |
-        | ival_m / bigint | INTERVAL '2' MONTH | CAST(2 AS BIGINT) |
-        | ival_m / float | INTERVAL '2' MONTH | CAST(2 AS FLOAT) |
-        | ival_m / double | INTERVAL '2' MONTH | CAST(2 AS DOUBLE) |
-        | ival_m / dec | INTERVAL '2' MONTH | CAST(2 AS DECIMAL(10,2)) |
         | ival_m / str | INTERVAL '2' MONTH | '2' |
-        | ival_y / unull | INTERVAL '2' YEAR | NULL |
-        | ival_y / null | INTERVAL '2' YEAR | CAST(NULL AS INT) |
-        | ival_y / tinyint | INTERVAL '2' YEAR | CAST(2 AS TINYINT) |
-        | ival_y / smallint | INTERVAL '2' YEAR | CAST(2 AS SMALLINT) |
-        | ival_y / int | INTERVAL '2' YEAR | CAST(2 AS INT) |
-        | ival_y / bigint | INTERVAL '2' YEAR | CAST(2 AS BIGINT) |
-        | ival_y / float | INTERVAL '2' YEAR | CAST(2 AS FLOAT) |
-        | ival_y / double | INTERVAL '2' YEAR | CAST(2 AS DOUBLE) |
-        | ival_y / dec | INTERVAL '2' YEAR | CAST(2 AS DECIMAL(10,2)) |
         | ival_y / str | INTERVAL '2' YEAR | '2' |
-        | ival_ym / unull | INTERVAL '1-2' YEAR TO MONTH | NULL |
-        | ival_ym / null | INTERVAL '1-2' YEAR TO MONTH | CAST(NULL AS INT) |
-        | ival_ym / tinyint | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS TINYINT) |
-        | ival_ym / smallint | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS SMALLINT) |
-        | ival_ym / int | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS INT) |
-        | ival_ym / bigint | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS BIGINT) |
-        | ival_ym / float | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS FLOAT) |
-        | ival_ym / double | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS DOUBLE) |
-        | ival_ym / dec | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS DECIMAL(10,2)) |
         | ival_ym / str | INTERVAL '1-2' YEAR TO MONTH | '2' |
         | calendar / dec | make_interval(0,1,0,1,0,0,0) | CAST(2 AS DECIMAL(10,2)) |
 
@@ -2022,6 +2022,33 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | calendar / float | make_interval(0,1,0,1,0,0,0) | CAST(2 AS FLOAT) |
         | calendar / double | make_interval(0,1,0,1,0,0,0) | CAST(2 AS DOUBLE) |
         | calendar / str | make_interval(0,1,0,1,0,0,0) | '2' |
+        | ival_m / unull | INTERVAL '2' MONTH | NULL |
+        | ival_m / null | INTERVAL '2' MONTH | CAST(NULL AS INT) |
+        | ival_m / tinyint | INTERVAL '2' MONTH | CAST(2 AS TINYINT) |
+        | ival_m / smallint | INTERVAL '2' MONTH | CAST(2 AS SMALLINT) |
+        | ival_m / int | INTERVAL '2' MONTH | CAST(2 AS INT) |
+        | ival_m / bigint | INTERVAL '2' MONTH | CAST(2 AS BIGINT) |
+        | ival_m / float | INTERVAL '2' MONTH | CAST(2 AS FLOAT) |
+        | ival_m / double | INTERVAL '2' MONTH | CAST(2 AS DOUBLE) |
+        | ival_m / dec | INTERVAL '2' MONTH | CAST(2 AS DECIMAL(10,2)) |
+        | ival_y / unull | INTERVAL '2' YEAR | NULL |
+        | ival_y / null | INTERVAL '2' YEAR | CAST(NULL AS INT) |
+        | ival_y / tinyint | INTERVAL '2' YEAR | CAST(2 AS TINYINT) |
+        | ival_y / smallint | INTERVAL '2' YEAR | CAST(2 AS SMALLINT) |
+        | ival_y / int | INTERVAL '2' YEAR | CAST(2 AS INT) |
+        | ival_y / bigint | INTERVAL '2' YEAR | CAST(2 AS BIGINT) |
+        | ival_y / float | INTERVAL '2' YEAR | CAST(2 AS FLOAT) |
+        | ival_y / double | INTERVAL '2' YEAR | CAST(2 AS DOUBLE) |
+        | ival_y / dec | INTERVAL '2' YEAR | CAST(2 AS DECIMAL(10,2)) |
+        | ival_ym / unull | INTERVAL '1-2' YEAR TO MONTH | NULL |
+        | ival_ym / null | INTERVAL '1-2' YEAR TO MONTH | CAST(NULL AS INT) |
+        | ival_ym / tinyint | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS TINYINT) |
+        | ival_ym / smallint | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS SMALLINT) |
+        | ival_ym / int | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS INT) |
+        | ival_ym / bigint | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS BIGINT) |
+        | ival_ym / float | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS FLOAT) |
+        | ival_ym / double | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS DOUBLE) |
+        | ival_ym / dec | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS DECIMAL(10,2)) |
 
     @sail-bug
     Scenario Outline: divide ansi-on: pair resolves (Sail rejects it): <case>
@@ -2042,35 +2069,8 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | ival_d / dec | INTERVAL '2' DAY | CAST(2 AS DECIMAL(10,2)) |
         | ival_dt / dec | INTERVAL '25' HOUR | CAST(2 AS DECIMAL(10,2)) |
         | ival_ds / dec | INTERVAL '1 02:03:04' DAY TO SECOND | CAST(2 AS DECIMAL(10,2)) |
-        | ival_m / unull | INTERVAL '2' MONTH | NULL |
-        | ival_m / null | INTERVAL '2' MONTH | CAST(NULL AS INT) |
-        | ival_m / tinyint | INTERVAL '2' MONTH | CAST(2 AS TINYINT) |
-        | ival_m / smallint | INTERVAL '2' MONTH | CAST(2 AS SMALLINT) |
-        | ival_m / int | INTERVAL '2' MONTH | CAST(2 AS INT) |
-        | ival_m / bigint | INTERVAL '2' MONTH | CAST(2 AS BIGINT) |
-        | ival_m / float | INTERVAL '2' MONTH | CAST(2 AS FLOAT) |
-        | ival_m / double | INTERVAL '2' MONTH | CAST(2 AS DOUBLE) |
-        | ival_m / dec | INTERVAL '2' MONTH | CAST(2 AS DECIMAL(10,2)) |
         | ival_m / str | INTERVAL '2' MONTH | '2' |
-        | ival_y / unull | INTERVAL '2' YEAR | NULL |
-        | ival_y / null | INTERVAL '2' YEAR | CAST(NULL AS INT) |
-        | ival_y / tinyint | INTERVAL '2' YEAR | CAST(2 AS TINYINT) |
-        | ival_y / smallint | INTERVAL '2' YEAR | CAST(2 AS SMALLINT) |
-        | ival_y / int | INTERVAL '2' YEAR | CAST(2 AS INT) |
-        | ival_y / bigint | INTERVAL '2' YEAR | CAST(2 AS BIGINT) |
-        | ival_y / float | INTERVAL '2' YEAR | CAST(2 AS FLOAT) |
-        | ival_y / double | INTERVAL '2' YEAR | CAST(2 AS DOUBLE) |
-        | ival_y / dec | INTERVAL '2' YEAR | CAST(2 AS DECIMAL(10,2)) |
         | ival_y / str | INTERVAL '2' YEAR | '2' |
-        | ival_ym / unull | INTERVAL '1-2' YEAR TO MONTH | NULL |
-        | ival_ym / null | INTERVAL '1-2' YEAR TO MONTH | CAST(NULL AS INT) |
-        | ival_ym / tinyint | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS TINYINT) |
-        | ival_ym / smallint | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS SMALLINT) |
-        | ival_ym / int | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS INT) |
-        | ival_ym / bigint | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS BIGINT) |
-        | ival_ym / float | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS FLOAT) |
-        | ival_ym / double | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS DOUBLE) |
-        | ival_ym / dec | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS DECIMAL(10,2)) |
         | ival_ym / str | INTERVAL '1-2' YEAR TO MONTH | '2' |
         | calendar / dec | make_interval(0,1,0,1,0,0,0) | CAST(2 AS DECIMAL(10,2)) |
 

@@ -14,6 +14,9 @@ use sail_function::error::generic_exec_err;
 use sail_function::scalar::datetime::negate_duration::NegateDuration;
 use sail_function::scalar::datetime::spark_interval::SparkDayTimeIntervalToCalendarInterval;
 use sail_function::scalar::datetime::spark_timestamp::SparkTimestamp;
+use sail_function::scalar::datetime::spark_ym_interval_scale::{
+    SparkDivideYmInterval, SparkMultiplyYmInterval,
+};
 use sail_function::scalar::math::rand_poisson::RandPoisson;
 use sail_function::scalar::math::randn::Randn;
 use sail_function::scalar::math::random::Random;
@@ -321,8 +324,17 @@ fn spark_multiply(input: ScalarFunctionInput) -> PlanResult<Expr> {
         return Err(arithmetic_operand_error("*", left_type, right_type));
     }
     Ok(match (left_type, right_type) {
-        // TODO: Casting DataType::Interval(_) to DataType::Int64 is not supported yet.
-        //  Seems to be a bug in DataFusion.
+        // `MultiplyYMInterval` (`BinaryArithmeticWithDatetimeResolver.scala:154-155`), either
+        // operand order. It scales the MONTHS and rounds HALF_UP, and DataFusion has no coercion
+        // at all for `Interval(YearMonth)` against a number, so without this the pair is refused.
+        (Ok(DataType::Interval(IntervalUnit::YearMonth)), Ok(_)) => {
+            ScalarUDF::from(SparkMultiplyYmInterval::new()).call(vec![left, right])
+        }
+        (Ok(_), Ok(DataType::Interval(IntervalUnit::YearMonth))) => {
+            ScalarUDF::from(SparkMultiplyYmInterval::new()).call(vec![right, left])
+        }
+        // Arrow casts `Interval(YearMonth)` and `Interval(DayTime)` to `Int64` but not
+        // `Interval(MonthDayNano)`, whose native type is `i128` (`arrow-cast/src/cast/mod.rs:331`).
         (Ok(DataType::Duration(TimeUnit::Microsecond)), Ok(_)) => {
             // Match duration because we cast Spark's DayTime interval to Duration.
             cast(
@@ -465,6 +477,14 @@ fn spark_divide(input: ScalarFunctionInput) -> PlanResult<Expr> {
     {
         return Err(arithmetic_operand_error("/", dividend_type, divisor_type));
     }
+    // `DivideYMInterval` (`BinaryArithmeticWithDatetimeResolver.scala:167`) scales the MONTHS and
+    // rounds HALF_UP. It goes before the zero-divisor short-circuit below on purpose: the interval
+    // divisions do not read the ANSI flag (`IntervalDivide`), so `INTERVAL '1' MONTH / 0` raises
+    // in BOTH modes, where a numeric `/` returns NULL with ANSI off.
+    if let Ok(DataType::Interval(IntervalUnit::YearMonth)) = &dividend_type {
+        return Ok(ScalarUDF::from(SparkDivideYmInterval::new()).call(vec![dividend, divisor]));
+    }
+
     // Plan-time check for literal zero divisors (fast path, better error UX).
     if is_zero_literal(&divisor) {
         if function_context.plan_config.ansi_mode {

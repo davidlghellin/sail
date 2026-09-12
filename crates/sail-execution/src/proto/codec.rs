@@ -179,6 +179,9 @@ use sail_function::scalar::datetime::spark_try_to_timestamp::SparkTryToTimestamp
 use sail_function::scalar::datetime::spark_unix_timestamp::SparkUnixTimestamp;
 use sail_function::scalar::datetime::spark_window_buckets::SparkWindowBuckets;
 use sail_function::scalar::datetime::spark_year::SparkYear;
+use sail_function::scalar::datetime::spark_ym_interval_scale::{
+    SparkDivideYmInterval, SparkMultiplyYmInterval,
+};
 use sail_function::scalar::datetime::timestamp_now::TimestampNow;
 use sail_function::scalar::drop_struct_field::DropStructField;
 use sail_function::scalar::explode::{Explode, explode_name_to_kind};
@@ -3307,6 +3310,12 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
                 Ok(Arc::new(ScalarUDF::from(SparkLuhnCheck::new())))
             }
             "negate_duration" => Ok(Arc::new(ScalarUDF::from(NegateDuration::new()))),
+            "spark_multiply_ym_interval" => {
+                Ok(Arc::new(ScalarUDF::from(SparkMultiplyYmInterval::new())))
+            }
+            "spark_divide_ym_interval" => {
+                Ok(Arc::new(ScalarUDF::from(SparkDivideYmInterval::new())))
+            }
             "spark_make_dt_interval" | "make_dt_interval" => {
                 Ok(Arc::new(ScalarUDF::from(SparkMakeDtInterval::new())))
             }
@@ -3414,6 +3423,8 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
             || node_inner.is::<MapFromEntries>()
             || node_inner.is::<MultiExpr>()
             || node_inner.is::<NegateDuration>()
+            || node_inner.is::<SparkMultiplyYmInterval>()
+            || node_inner.is::<SparkDivideYmInterval>()
             || node_inner.is::<OverlayFunc>()
             || node_inner.is::<ParseUrl>()
             || node_inner.is::<RaiseError>()
