@@ -209,21 +209,6 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | calendar + calendar | make_interval(0,1,0,1,0,0,0) | make_interval(0,1,0,1,0,0,0) |
         | unull + date | NULL | DATE'2024-01-15' |
         | date + unull | DATE'2024-01-15' | NULL |
-
-    @sail-bug
-    Scenario Outline: plus ansi-off: pair resolves (Sail rejects it): <case>
-      Given config spark.sql.ansi.enabled = false
-      And config spark.sql.timeType.enabled = true
-      When query
-        """
-        SELECT typeof((<l>) + (<r>)) IS NOT NULL AS resolved
-        """
-      Then query result
-        | resolved |
-        | true     |
-
-      Examples:
-        | case | l | r |
         | unull + str | NULL | '2' |
         | null + str | CAST(NULL AS INT) | '2' |
         | tinyint + str | CAST(2 AS TINYINT) | '2' |
@@ -490,21 +475,6 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | calendar + calendar | make_interval(0,1,0,1,0,0,0) | make_interval(0,1,0,1,0,0,0) |
         | unull + date | NULL | DATE'2024-01-15' |
         | date + unull | DATE'2024-01-15' | NULL |
-
-    @sail-bug
-    Scenario Outline: plus ansi-on: pair resolves (Sail rejects it): <case>
-      Given config spark.sql.ansi.enabled = true
-      And config spark.sql.timeType.enabled = true
-      When query
-        """
-        SELECT typeof((<l>) + (<r>)) IS NOT NULL AS resolved
-        """
-      Then query result
-        | resolved |
-        | true     |
-
-      Examples:
-        | case | l | r |
         | null + str | CAST(NULL AS INT) | '2' |
         | tinyint + str | CAST(2 AS TINYINT) | '2' |
         | smallint + str | CAST(2 AS SMALLINT) | '2' |
@@ -750,21 +720,6 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | ival_ym - ival_ym | INTERVAL '1-2' YEAR TO MONTH | INTERVAL '1-2' YEAR TO MONTH |
         | calendar - unull | make_interval(0,1,0,1,0,0,0) | NULL |
         | calendar - calendar | make_interval(0,1,0,1,0,0,0) | make_interval(0,1,0,1,0,0,0) |
-
-    @sail-bug
-    Scenario Outline: minus ansi-off: pair resolves (Sail rejects it): <case>
-      Given config spark.sql.ansi.enabled = false
-      And config spark.sql.timeType.enabled = true
-      When query
-        """
-        SELECT typeof((<l>) - (<r>)) IS NOT NULL AS resolved
-        """
-      Then query result
-        | resolved |
-        | true     |
-
-      Examples:
-        | case | l | r |
         | unull - str | NULL | '2' |
         | null - str | CAST(NULL AS INT) | '2' |
         | tinyint - str | CAST(2 AS TINYINT) | '2' |
@@ -995,21 +950,6 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | ival_ym - ival_ym | INTERVAL '1-2' YEAR TO MONTH | INTERVAL '1-2' YEAR TO MONTH |
         | calendar - unull | make_interval(0,1,0,1,0,0,0) | NULL |
         | calendar - calendar | make_interval(0,1,0,1,0,0,0) | make_interval(0,1,0,1,0,0,0) |
-
-    @sail-bug
-    Scenario Outline: minus ansi-on: pair resolves (Sail rejects it): <case>
-      Given config spark.sql.ansi.enabled = true
-      And config spark.sql.timeType.enabled = true
-      When query
-        """
-        SELECT typeof((<l>) - (<r>)) IS NOT NULL AS resolved
-        """
-      Then query result
-        | resolved |
-        | true     |
-
-      Examples:
-        | case | l | r |
         | null - str | CAST(NULL AS INT) | '2' |
         | tinyint - str | CAST(2 AS TINYINT) | '2' |
         | smallint - str | CAST(2 AS SMALLINT) | '2' |
@@ -1073,22 +1013,6 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | time - ival_d | TIME '12:00:00' | INTERVAL '2' DAY |
         | time - ival_dt | TIME '12:00:00' | INTERVAL '25' HOUR |
         | time - ival_ds | TIME '12:00:00' | INTERVAL '1 02:03:04' DAY TO SECOND |
-
-    @sail-bug
-    @spark-4.1
-    Scenario Outline: minus ansi-on: pair resolves, TIME operand (Sail rejects it): <case>
-      Given config spark.sql.ansi.enabled = true
-      And config spark.sql.timeType.enabled = true
-      When query
-        """
-        SELECT typeof((<l>) - (<r>)) IS NOT NULL AS resolved
-        """
-      Then query result
-        | resolved |
-        | true     |
-
-      Examples:
-        | case | l | r |
         | str - time | '2' | TIME '12:00:00' |
         | time - str | TIME '12:00:00' | '2' |
 
@@ -1307,21 +1231,6 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | ival_m * str | INTERVAL '2' MONTH | '2' |
         | ival_y * str | INTERVAL '2' YEAR | '2' |
         | ival_ym * str | INTERVAL '1-2' YEAR TO MONTH | '2' |
-
-    @sail-bug
-    Scenario Outline: times ansi-off: pair resolves (Sail rejects it): <case>
-      Given config spark.sql.ansi.enabled = false
-      And config spark.sql.timeType.enabled = true
-      When query
-        """
-        SELECT typeof((<l>) * (<r>)) IS NOT NULL AS resolved
-        """
-      Then query result
-        | resolved |
-        | true     |
-
-      Examples:
-        | case | l | r |
         | unull * str | NULL | '2' |
         | unull * calendar | NULL | make_interval(0,1,0,1,0,0,0) |
         | null * str | CAST(NULL AS INT) | '2' |
@@ -1593,21 +1502,6 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | ival_m * str | INTERVAL '2' MONTH | '2' |
         | ival_y * str | INTERVAL '2' YEAR | '2' |
         | ival_ym * str | INTERVAL '1-2' YEAR TO MONTH | '2' |
-
-    @sail-bug
-    Scenario Outline: times ansi-on: pair resolves (Sail rejects it): <case>
-      Given config spark.sql.ansi.enabled = true
-      And config spark.sql.timeType.enabled = true
-      When query
-        """
-        SELECT typeof((<l>) * (<r>)) IS NOT NULL AS resolved
-        """
-      Then query result
-        | resolved |
-        | true     |
-
-      Examples:
-        | case | l | r |
         | unull * calendar | NULL | make_interval(0,1,0,1,0,0,0) |
         | null * str | CAST(NULL AS INT) | '2' |
         | null * calendar | CAST(NULL AS INT) | make_interval(0,1,0,1,0,0,0) |
@@ -1843,23 +1737,8 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | ival_m / str | INTERVAL '2' MONTH | '2' |
         | ival_y / str | INTERVAL '2' YEAR | '2' |
         | ival_ym / str | INTERVAL '1-2' YEAR TO MONTH | '2' |
-
-    @sail-bug
-    Scenario Outline: divide ansi-off: pair resolves (Sail rejects it): <case>
-      Given config spark.sql.ansi.enabled = false
-      And config spark.sql.timeType.enabled = true
-      When query
-        """
-        SELECT typeof((<l>) / (<r>)) IS NOT NULL AS resolved
-        """
-      Then query result
-        | resolved |
-        | true     |
-
-      Examples:
-        | case | l | r |
-        | str / dec | '2' | CAST(2 AS DECIMAL(10,2)) |
         | calendar / dec | make_interval(0,1,0,1,0,0,0) | CAST(2 AS DECIMAL(10,2)) |
+        | str / dec | '2' | CAST(2 AS DECIMAL(10,2)) |
 
     @spark-4
     Scenario Outline: divide ansi-off: pair resolves, VARIANT or untyped NULL pair operand: <case>
@@ -2055,24 +1934,9 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | ival_m / str | INTERVAL '2' MONTH | '2' |
         | ival_y / str | INTERVAL '2' YEAR | '2' |
         | ival_ym / str | INTERVAL '1-2' YEAR TO MONTH | '2' |
-
-    @sail-bug
-    Scenario Outline: divide ansi-on: pair resolves (Sail rejects it): <case>
-      Given config spark.sql.ansi.enabled = true
-      And config spark.sql.timeType.enabled = true
-      When query
-        """
-        SELECT typeof((<l>) / (<r>)) IS NOT NULL AS resolved
-        """
-      Then query result
-        | resolved |
-        | true     |
-
-      Examples:
-        | case | l | r |
+        | calendar / dec | make_interval(0,1,0,1,0,0,0) | CAST(2 AS DECIMAL(10,2)) |
         | dec / str | CAST(2 AS DECIMAL(10,2)) | '2' |
         | str / dec | '2' | CAST(2 AS DECIMAL(10,2)) |
-        | calendar / dec | make_interval(0,1,0,1,0,0,0) | CAST(2 AS DECIMAL(10,2)) |
 
     @spark-4
     Scenario Outline: divide ansi-on: pair resolves, VARIANT or untyped NULL pair operand: <case>
@@ -2194,21 +2058,6 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | dec % double | CAST(2 AS DECIMAL(10,2)) | CAST(2 AS DOUBLE) |
         | dec % dec | CAST(2 AS DECIMAL(10,2)) | CAST(2 AS DECIMAL(10,2)) |
         | dec % str | CAST(2 AS DECIMAL(10,2)) | '2' |
-
-    @sail-bug
-    Scenario Outline: modulo ansi-off: pair resolves (Sail rejects it): <case>
-      Given config spark.sql.ansi.enabled = false
-      And config spark.sql.timeType.enabled = true
-      When query
-        """
-        SELECT typeof((<l>) % (<r>)) IS NOT NULL AS resolved
-        """
-      Then query result
-        | resolved |
-        | true     |
-
-      Examples:
-        | case | l | r |
         | str % unull | '2' | NULL |
         | str % null | '2' | CAST(NULL AS INT) |
         | str % tinyint | '2' | CAST(2 AS TINYINT) |
@@ -2331,21 +2180,6 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | dec % float | CAST(2 AS DECIMAL(10,2)) | CAST(2 AS FLOAT) |
         | dec % double | CAST(2 AS DECIMAL(10,2)) | CAST(2 AS DOUBLE) |
         | dec % dec | CAST(2 AS DECIMAL(10,2)) | CAST(2 AS DECIMAL(10,2)) |
-
-    @sail-bug
-    Scenario Outline: modulo ansi-on: pair resolves (Sail rejects it): <case>
-      Given config spark.sql.ansi.enabled = true
-      And config spark.sql.timeType.enabled = true
-      When query
-        """
-        SELECT typeof((<l>) % (<r>)) IS NOT NULL AS resolved
-        """
-      Then query result
-        | resolved |
-        | true     |
-
-      Examples:
-        | case | l | r |
         | null % str | CAST(NULL AS INT) | '2' |
         | tinyint % str | CAST(2 AS TINYINT) | '2' |
         | smallint % str | CAST(2 AS SMALLINT) | '2' |

@@ -545,6 +545,17 @@ fn spark_divide(input: ScalarFunctionInput) -> PlanResult<Expr> {
     if let Some(error) = rejects_udt_operand("/", &dividend, &divisor, function_context.schema) {
         return Err(error);
     }
+    // `/` is a `BinaryArithmetic` too, so the string promotion applies. Its generic branch below
+    // already cast a string to DOUBLE, which hid the gap for most pairs -- but not beside a
+    // DECIMAL (refused, or typed DECIMAL), not for a malformed string with ANSI off (raised where
+    // Spark gives NULL), and not for `'2.5' / 2` with ANSI on, which Spark REFUSES because the
+    // string goes to BIGINT and Sail answered `1.25`.
+    let (dividend, divisor) = promote_string_operands(
+        dividend,
+        divisor,
+        function_context.schema,
+        function_context.plan_config.ansi_mode,
+    );
 
     let ansi_mode = function_context.plan_config.ansi_mode;
     let dividend_type = dividend.get_type(function_context.schema);

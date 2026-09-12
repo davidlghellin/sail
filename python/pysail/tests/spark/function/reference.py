@@ -19,6 +19,9 @@ if TYPE_CHECKING:
     import pathlib
 
 LINE_LENGTH = 120
+# Spark first: the oracle column reads before the one it is measured against, and a fixed order
+# keeps a regeneration diff down to the cells that actually changed.
+COLUMNS = ("spark", "sail")
 
 
 def write_reference(path: pathlib.Path, name: str, data: dict[str, dict[str, str]]) -> None:
@@ -26,10 +29,12 @@ def write_reference(path: pathlib.Path, name: str, data: dict[str, dict[str, str
     header = path.read_text().split(f"{name} = {{")[0].rstrip("\n")
     lines = [header, "", f"{name} = {{"]
     for key, value in sorted(data.items()):
-        pairs = ", ".join(f'"{column}": {json.dumps(value[column])}' for column in sorted(value))
+        pairs = ", ".join(f'"{column}": {json.dumps(value[column])}' for column in COLUMNS if column in value)
         entry = f"    {json.dumps(key)}: {{{pairs}}},"
         if len(entry) > LINE_LENGTH:
-            fields = "\n".join(f'        "{column}": {json.dumps(value[column])},' for column in sorted(value))
+            fields = "\n".join(
+                f'        "{column}": {json.dumps(value[column])},' for column in COLUMNS if column in value
+            )
             entry = f"    {json.dumps(key)}: {{\n{fields}\n    }},"
         lines.append(entry)
     lines.append("}")
