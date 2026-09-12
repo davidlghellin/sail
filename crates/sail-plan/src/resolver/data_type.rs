@@ -89,6 +89,20 @@ impl PlanResolver<'_> {
         self.resolve_data_type(data_type, &mut state)
     }
 
+    /// Spark refuses the TIME type unless `spark.sql.timeType.enabled` is on, in every Connect
+    /// execution rather than only when converting to Arrow.
+    ///
+    /// Reference: org.apache.spark.sql.catalyst.util.TypeUtils#failUnsupportedDataType
+    pub(super) fn check_time_type_enabled(&self) -> PlanResult<()> {
+        if self.config.time_type_enabled {
+            Ok(())
+        } else {
+            Err(PlanError::unsupported(
+                "[UNSUPPORTED_TIME_TYPE] The data type TIME is not supported.",
+            ))
+        }
+    }
+
     /// References:
     ///   org.apache.spark.sql.util.ArrowUtils#toArrowType
     ///   org.apache.spark.sql.connect.common.DataTypeProtoConverter
@@ -123,9 +137,11 @@ impl PlanResolver<'_> {
             DataType::Date32 => Ok(adt::DataType::Date32),
             DataType::Date64 => Ok(adt::DataType::Date64),
             DataType::Time32 { time_unit } => {
+                self.check_time_type_enabled()?;
                 Ok(adt::DataType::Time32(Self::resolve_time_unit(time_unit)?))
             }
             DataType::Time64 { time_unit } => {
+                self.check_time_type_enabled()?;
                 Ok(adt::DataType::Time64(Self::resolve_time_unit(time_unit)?))
             }
             DataType::Duration { time_unit } => {

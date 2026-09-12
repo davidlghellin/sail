@@ -75,12 +75,14 @@ def variable_for_delta_log(name: str, location_var: str, variables: dict) -> dic
 
 @given(parsers.parse("config {key} = {value}"))
 def spark_config_override(key, value, spark, variables):
-    """Sets a Spark configuration value. Restores the original value or unsets the value after the scenario."""
+    """Sets a Spark configuration value. Restores the original value or unsets the value after the scenario.
+
+    Whether the key was set is read from `getAll`, which lists only the keys the session set:
+    reading the value back cannot tell "unset" from "set to the default", so restoring it would
+    pin the default explicitly and leak that setting into every later scenario of the session.
+    """
     rendered_value = Template(value).render(**variables)
-    try:
-        old_value = spark.conf.get(key)
-    except Exception:  # noqa: BLE001
-        old_value = None
+    old_value = spark.conf.getAll.get(key)
     spark.conf.set(key, rendered_value)
     yield
     if old_value is None:
