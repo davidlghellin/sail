@@ -7,15 +7,16 @@ Feature: arithmetic operands whose type is derived, vs Spark 4.2.0
   # matrix can see it -- which is how `DATE + datediff(...)` was refused for a while.
   #
   # Found by brute force, 2026-09-12: the 910 executable examples in the function catalogue were
-  # run through `typeof` on both engines (55 differ), and the 55 divergent expressions were then
+  # run through `typeof` on both engines (55 differed then, 51 now that `datediff`, `date_diff`
+  # and `date - date` carry Spark's types), and the divergent expressions were then
   # combined with a DATE and an INT operand under all five operators (550 cells, 38 verdicts
   # differ). One scenario per root cause. Each row was measured on Spark first and then on Sail.
 
   Rule: a date offset that comes out of a function resolves
 
-    # The regression this file exists for. Spark types `datediff` and `regexp_count` as INT, Sail
-    # as BIGINT, so a guard narrowed to Spark's accept set refuses a query Spark answers once the
-    # value crosses a projection boundary. Green on both engines; it locks the accept set open.
+    # The regression this file exists for. Spark types `regexp_count` as INT and Sail as BIGINT,
+    # so a guard narrowed to Spark's accept set refuses a query Spark answers once the value
+    # crosses a projection boundary. Green on both engines; it locks the accept set open.
     Scenario Outline: a date shifted by <case> resolves
       When query
         """
@@ -79,9 +80,9 @@ Feature: arithmetic operands whose type is derived, vs Spark 4.2.0
 
   Rule: the result type of a function decides the cell it lands in
 
-    # The root of every row above, asserted directly. `bitmap_bit_position` runs the other way
-    # from `datediff`: Spark types it BIGINT, which `DateAdd` refuses, while Sail types it INT and
-    # accepts the offset.
+    # The root of every row above, asserted directly, and it runs both ways: Spark types
+    # `regexp_instr` INT and Sail BIGINT, while `bitmap_bit_position` is BIGINT in Spark -- which
+    # `DateAdd` refuses -- and INT in Sail, which accepts the offset.
     @sail-bug
     Scenario Outline: <case>
       When query
@@ -111,38 +112,39 @@ Feature: arithmetic operands whose type is derived, vs Spark 4.2.0
     # appears ONLY where the inner expression's result type already diverges (60 cells whose inner
     # type agrees produced 0), and not even always -- `float + decimal` differs in type yet stays
     # numeric, so the verdict holds. So the risk reduces to the result-type divergences already
-    # pinned in `arithmetic_result_type.feature`; these four are that risk made observable.
+    # pinned in `arithmetic_result_type.feature`; these three are that risk made observable.
     #
-    # Sail's inner type is BIGINT where Spark's is `INTERVAL DAY`, and DATE where Spark's is
-    # TIMESTAMP, so the outer operator sees a different operand in each engine.
-    @sail-bug
-    Scenario Outline: <case> is refused
+    # `date - date` yields a day-time interval in both engines now, so an INT added to it is
+    # refused by both -- green, and the guard against the type drifting back.
+    Scenario: a date difference plus an INT is refused
       When query
         """
-        SELECT <expression> AS result
+        SELECT (DATE'2024-01-15' - DATE'2024-01-01') + CAST(2 AS INT) AS result
         """
       Then query error (?i)cannot resolve
 
-      Examples:
-        | case                            | expression                                              |
-        | a date difference plus an INT   | (DATE'2024-01-15' - DATE'2024-01-01') + CAST(2 AS INT)  |
-        | a shifted date plus an INT      | (DATE'2024-01-15' + INTERVAL '25' HOUR) + CAST(2 AS INT) |
-
-    # The other direction, and the worse one: Sail REFUSES what Spark answers. Only one row:
-    # the other over-rejection the sweep found -- a year-month interval times a number -- is
-    # already inventoried by 60 `@sail-bug` rows in `arithmetic_operand_resolution.feature`,
-    # and its root is a missing implementation, not a type that differs.
+    # The one left: Sail's inner type is DATE where Spark's is TIMESTAMP, so the outer `+` sees a
+    # different operand in each engine and only Spark refuses the INT.
     @sail-bug
-    Scenario Outline: <case> resolves
+    Scenario: a shifted date plus an INT is refused
       When query
         """
-        SELECT CAST(<expression> AS STRING) AS result
+        SELECT (DATE'2024-01-15' + INTERVAL '25' HOUR) + CAST(2 AS INT) AS result
+        """
+      Then query error (?i)cannot resolve
+
+    # The other direction, and the worse one: Sail REFUSED what Spark answers. It resolves now --
+    # `date - date` yields an interval, so the outer `+` has two intervals to add -- and what is
+    # left is the rendering: Sail prints `INTERVAL '16 00:00:00' DAY TO SECOND`, because
+    # `Duration(Microsecond)` has one single spelling and the declared field range is not carried.
+    # That is the interval metadata work of `fix/interval`, so the row stays tagged for the text.
+    @sail-bug
+    Scenario: a date difference plus an interval resolves
+      When query
+        """
+        SELECT CAST((DATE'2024-01-15' - DATE'2024-01-01') + INTERVAL '2' DAY AS STRING) AS result
         """
       Then query result
-        | result     |
-        | <expected> |
-
-      Examples:
-        | case                               | expression                                               | expected          |
-        | a date difference plus an interval | (DATE'2024-01-15' - DATE'2024-01-01') + INTERVAL '2' DAY | INTERVAL '16' DAY |
+        | result            |
+        | INTERVAL '16' DAY |
 

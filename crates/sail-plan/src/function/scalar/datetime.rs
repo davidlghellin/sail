@@ -282,8 +282,11 @@ fn date_days_arithmetic(dt1: Expr, dt2: Expr, op: Operator) -> Expr {
         }
         _ => (cast(dt1, DataType::Date32), cast(dt2, DataType::Date32)),
     };
-    let dt1 = cast(dt1, DataType::Int64);
-    let dt2 = cast(dt2, DataType::Int64);
+    // `DateDiff.dataType` is `IntegerType` (`datetimeExpressions.scala:2522`). A BIGINT here is
+    // not cosmetic: it is a different arithmetic operand than Spark's, so `DATE + datediff(...)`
+    // lands in a cell Spark never uses.
+    let dt1 = cast(dt1, DataType::Int32);
+    let dt2 = cast(dt2, DataType::Int32);
     Expr::BinaryExpr(BinaryExpr {
         left: Box::new(dt1),
         op,

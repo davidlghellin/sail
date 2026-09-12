@@ -35,25 +35,32 @@ Feature: arithmetic result types (+ - * / %) vs Spark 4.2.0
 
   Rule: subtracting two datetimes yields an interval
 
-    # `SubtractDates` returns `DayTimeIntervalType(DAY)` (`datetimeExpressions.scala:3617`) and
-    # `SubtractTimestamps` returns `DayTimeIntervalType()`. Sail returns a plain BIGINT for the
-    # first and an Arrow `Duration` for the second. The BIGINT is not cosmetic: it is why
-    # `is_date_offset_numeric` cannot be narrowed to Spark's accept set, since refusing a BIGINT
-    # offset would refuse `DATE + datediff(...)`, which Spark answers.
-    @sail-bug
-    Scenario Outline: <case> is an interval
+    # `SubtractTimestamps` returns `DayTimeIntervalType()` -- the full DAY TO SECOND range, which
+    # Sail can spell -- and it takes the pair whenever either side is a timestamp
+    # (`BinaryArithmeticWithDatetimeResolver.scala:139-141`), DATE included.
+    Scenario: a date minus a timestamp is an interval
       When query
         """
-        SELECT typeof(<expression>) AS result
+        SELECT typeof(DATE'2024-01-15' - TIMESTAMP'2024-01-01 00:00:00') AS result
         """
       Then query result
-        | result |
-        | <type> |
+        | result                 |
+        | interval day to second |
 
-      Examples:
-        | case        | expression                                        | type                   |
-        | date - date | DATE'2024-01-15' - DATE'2024-01-01'               | interval day           |
-        | date - ts   | DATE'2024-01-15' - TIMESTAMP'2024-01-01 00:00:00' | interval day to second |
+    # `SubtractDates` returns `DayTimeIntervalType(DAY)` (`datetimeExpressions.scala:3617`), and
+    # that is a day-time interval in Sail too, so the arithmetic cell matches; what is left is the
+    # FIELD RANGE, which an Arrow `Duration` cannot carry -- every day-time interval reads DAY TO
+    # SECOND. That needs the `SAIL::spark::interval` metadata, which lands with `fix/interval`;
+    # this PR only moved the difference into the right family.
+    @sail-bug
+    Scenario: a date minus a date is an interval with Spark's field range
+      When query
+        """
+        SELECT typeof(DATE'2024-01-15' - DATE'2024-01-01') AS result
+        """
+      Then query result
+        | result       |
+        | interval day |
 
   Rule: a date shifted by a day-time interval becomes a timestamp
 

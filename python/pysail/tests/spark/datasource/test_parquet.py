@@ -737,16 +737,14 @@ def test_parquet_arithmetic_operand_rejection(spark, tmp_path):
         with pytest.raises(AnalysisException, match=r"(?i)cannot resolve"):
             spark.sql(f"SELECT fsb {op} 1 FROM arithmetic_operands").collect()  # noqa: S608
 
-    # `DateAdd` takes a BYTE, SHORT or INT offset (`datetimeExpressions.scala:331`), so Spark
-    # rejects the two wide widths, which its reader widens to BIGINT and DECIMAL(20,0). Sail
-    # accepts every integral offset -- see `is_date_offset_numeric` -- because it types
-    # `datediff` and `date - date` as BIGINT; the divergence is pinned in
-    # `arithmetic_operand_resolution.feature`.
-    # Spark reads UINT_32 as BIGINT and UINT_64 as DECIMAL(20,0), neither of which `DateAdd`
-    # accepts (`datetimeExpressions.scala:331-332`, and it is `ExpectsInputTypes`). Sail reads
-    # UINT_32 as INT and accepts every integral offset -- see `is_date_offset_numeric` -- because
-    # it types `datediff` and `date - date` as BIGINT. That divergence is pinned in
-    # `test_parquet_uint32_date_offset_is_named_bigint`, so here the engines part ways on `u32`.
+    # Spark reads UINT_32 as BIGINT and UINT_64 as DECIMAL(20,0), and `DateAdd` takes only a
+    # BYTE, SHORT or INT offset (`datetimeExpressions.scala:331-332`, and it is
+    # `ExpectsInputTypes`), so it rejects both. Sail reads UINT_32 as INT and accepts every
+    # integral offset -- see `is_date_offset_numeric` -- because it still types `regexp_count`
+    # and `regexp_instr` as BIGINT where Spark types them INT, and narrowing the offset rule
+    # would refuse `DATE + regexp_count(...)`, a query Spark answers. The naming divergence is
+    # pinned in `test_parquet_uint32_date_offset_is_named_bigint`, so here the engines part ways
+    # on `u32`.
     accepted = ["u8", "u16"] if is_jvm_spark() else ["u8", "u16", "u32"]
     for column in accepted:
         query = f"SELECT DATE'2024-01-01' + {column} AS r FROM arithmetic_operands"  # noqa: S608

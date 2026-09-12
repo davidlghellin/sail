@@ -68,6 +68,9 @@ fn add_day_time_interval_to_string(
     }
 }
 
+/// Microseconds in a day, to scale a date difference into a day-time interval.
+const MICROSECONDS_PER_DAY: i64 = 24 * 60 * 60 * 1_000_000;
+
 /// Arguments:
 ///   - left: A numeric, STRING, DATE, TIMESTAMP, or INTERVAL expression.
 ///   - right: If left is a numeric right must be numeric expression, or an INTERVAL otherwise.
@@ -94,14 +97,22 @@ fn spark_plus(input: ScalarFunctionInput) -> PlanResult<Expr> {
         if let Some(error) = rejects_udt_operand("+", &left, &right, function_context.schema) {
             return Err(error);
         }
+        let (left, right) = cast_untyped_null_beside_datetime(
+            left,
+            right,
+            function_context.schema,
+            NullPartner::DayTimeInterval(Arc::clone(
+                &function_context.plan_config.session_timezone,
+            )),
+        );
         let (left_type, right_type) = (
             left.get_type(function_context.schema),
             right.get_type(function_context.schema),
         );
         if let (Ok(left_type), Ok(right_type)) = (&left_type, &right_type)
             && rejects_add(
-                &date_offset_view(&left, left_type, function_context.schema),
-                &date_offset_view(&right, right_type, function_context.schema),
+                left_type,
+                right_type,
                 function_context.plan_config.ansi_mode,
             )
         {
@@ -197,14 +208,20 @@ fn spark_minus(input: ScalarFunctionInput) -> PlanResult<Expr> {
         if let Some(error) = rejects_udt_operand("-", &left, &right, function_context.schema) {
             return Err(error);
         }
+        let (left, right) = cast_untyped_null_beside_datetime(
+            left,
+            right,
+            function_context.schema,
+            NullPartner::OtherOperand,
+        );
         let (left_type, right_type) = (
             left.get_type(function_context.schema),
             right.get_type(function_context.schema),
         );
         if let (Ok(left_type), Ok(right_type)) = (&left_type, &right_type)
             && rejects_subtract(
-                &date_offset_view(&left, left_type, function_context.schema),
-                &date_offset_view(&right, right_type, function_context.schema),
+                left_type,
+                right_type,
                 function_context.plan_config.ansi_mode,
             )
         {
@@ -230,6 +247,31 @@ fn spark_minus(input: ScalarFunctionInput) -> PlanResult<Expr> {
             (Ok(DataType::Date32), Ok(DataType::Duration(TimeUnit::Microsecond))) => {
                 left - cast(right, DataType::Interval(IntervalUnit::MonthDayNano))
             }
+            // `SubtractTimestamps` takes the pair whenever EITHER side is a timestamp, and that
+            // arm comes before the `SubtractDates` one
+            // (`BinaryArithmeticWithDatetimeResolver.scala:139-142`), so the DATE is read as a
+            // timestamp. Casting it explicitly is what makes the answer right: Spark reads a DATE
+            // as midnight in the SESSION time zone, and DataFusion's own coercion reads it as
+            // midnight UTC -- a wrong value under any other zone -- and yields
+            // `Duration(Nanosecond)`, which has no Spark type at all.
+            (Ok(DataType::Date32), Ok(timestamp @ DataType::Timestamp(_, _))) => cast(
+                cast(left, timestamp.clone()) - right,
+                DataType::Duration(TimeUnit::Microsecond),
+            ),
+            (Ok(timestamp @ DataType::Timestamp(_, _)), Ok(DataType::Date32)) => cast(
+                left - cast(right, timestamp.clone()),
+                DataType::Duration(TimeUnit::Microsecond),
+            ),
+            // `SubtractDates` returns `DayTimeIntervalType(DAY)` (`datetimeExpressions.scala:3617`),
+            // not a number. Sail spells a day-time interval as Arrow `Duration`, so the day count
+            // is scaled to microseconds. Without this the difference is a BIGINT, which lands in a
+            // different arithmetic cell than Spark's interval: `(date - date) + INTERVAL` is
+            // refused here and answered there, and `(date - date) + INT` the other way round.
+            (Ok(DataType::Date32), Ok(DataType::Date32)) => cast(
+                (cast(left, DataType::Int64) - cast(right, DataType::Int64))
+                    * lit(MICROSECONDS_PER_DAY),
+                DataType::Duration(TimeUnit::Microsecond),
+            ),
             (Ok(DataType::Date32), Ok(right_type)) if right_type.is_numeric() => {
                 cast(cast(left, DataType::Int32) - right, DataType::Date32)
             }
@@ -1016,11 +1058,9 @@ fn is_date_offset_numeric(data_type: &DataType) -> bool {
     // `ImplicitCastInputTypes`, so Spark rejects a BIGINT offset. Sail accepts one anyway,
     // because Sail types several expressions WIDER than Spark does and refusing BIGINT here
     // would refuse queries Spark answers:
-    //   * `datediff` / `date_diff` -- Spark `IntegerType` (`datetimeExpressions.scala:2522`)
-    //   * `date - date`            -- Spark `DayTimeIntervalType(DAY)` (`:3617`)
-    //   * `regexp_count`           -- Spark `IntegerType`
-    // are all BIGINT in Sail. `date_offset_view` only rescues the syntactic `date - date`; once
-    // the value crosses a projection boundary it is a bare BIGINT column.
+    //   * `regexp_count` / `regexp_instr` -- Spark `IntegerType`, BIGINT in Sail
+    // `datediff`, `date_diff` and `date - date` were in this list too and now carry Spark's own
+    // types, so once the last BIGINT-typed offset is gone this rule can go with it.
     // `UInt32` follows the same rule: Sail's Arrow->Spark mapping reports it as INT
     // (`data_type_arrow.rs`), so refusing it would contradict the schema Sail advertises.
     // `UInt64` stays out: Sail promotes the sum to `Decimal128(21,0)`, which does not cast
@@ -1039,30 +1079,66 @@ fn is_date_offset_numeric(data_type: &DataType) -> bool {
     )
 }
 
-/// The type the date-offset rules should judge an operand by. Spark types `datediff`/`date_diff`
-/// as INT (`datetimeExpressions.scala:2522`) and `date - date` as `INTERVAL DAY`
-/// (`datetimeExpressions.scala:3616-3618`), and a DATE takes either. Sail computes all three as a
-/// BIGINT difference of the two dates, which the INT-width check would reject.
-///
-/// TODO: give `datediff`/`date_diff` and `date - date` Spark's result types, then drop this.
-fn date_offset_view(expr: &Expr, data_type: &DataType, schema: &DFSchemaRef) -> DataType {
-    let is_date = |expr: &Expr| {
-        let expr = match expr {
-            Expr::Cast(cast) => cast.expr.as_ref(),
-            other => other,
-        };
+/// What a bare `NULL` becomes when it sits next to a datetime.
+enum NullPartner {
+    /// `Add` casts it to a day-time interval, whatever the datetime is. A DATE partner is promoted
+    /// to a timestamp in the session time zone along with it, for the reason given below.
+    DayTimeInterval(Arc<str>),
+    /// `Subtract` casts it to the other operand's own type.
+    OtherOperand,
+}
+
+/// Spark never leaves a bare `NULL` as `NullType` beside a datetime, and the cast it inserts
+/// decides the whole arm that follows: `Add` casts the NULL side to a day-time interval
+/// (`BinaryArithmeticWithDatetimeResolver.scala:88,91`), so `DATE + NULL` is a date plus an
+/// interval and yields a TIMESTAMP (`:69`), while `Subtract` casts it to the other operand's own
+/// type (`:119,121`), so `DATE - NULL` is `date - date` and yields an `INTERVAL DAY` (`:142`).
+/// Without this Sail hands DataFusion a `Null` operand it cannot coerce, and refuses twelve pairs
+/// Spark answers. The same rule covers an interval partner, which Sail already handles.
+fn cast_untyped_null_beside_datetime(
+    left: Expr,
+    right: Expr,
+    schema: &DFSchemaRef,
+    partner: NullPartner,
+) -> (Expr, Expr) {
+    let is_datetime = |data_type: &DataType| {
         matches!(
-            expr.get_type(schema),
-            Ok(DataType::Date32 | DataType::Date64)
+            data_type,
+            DataType::Date32
+                | DataType::Date64
+                | DataType::Timestamp(_, _)
+                | DataType::Time32(_)
+                | DataType::Time64(_)
         )
     };
-    match expr {
-        Expr::BinaryExpr(BinaryExpr {
-            left,
-            op: Operator::Minus,
-            right,
-        }) if is_date(left) && is_date(right) => DataType::Int32,
-        _ => data_type.clone(),
+    let (Ok(left_type), Ok(right_type)) = (left.get_type(schema), right.get_type(schema)) else {
+        return (left, right);
+    };
+    // Spark's `+` splits on the interval's declared fields: a DAY-to-DAY interval keeps the DATE
+    // (`:68`) and anything wider promotes it to a TIMESTAMP (`:69`). Sail cannot tell the two
+    // apart -- `Duration(Microsecond)` is the only day-time spelling it has -- but here it does
+    // not have to: the interval is one the resolver itself inserted, and it is always
+    // `DayTimeIntervalType.DEFAULT`, DAY TO SECOND. So the wide branch is the certain one, and
+    // the DATE is promoted with it. A user-written `DATE + INTERVAL '2' DAY` is untouched.
+    let datetime = |expr: Expr, data_type: &DataType| match (&partner, data_type) {
+        (NullPartner::DayTimeInterval(timezone), DataType::Date32 | DataType::Date64) => cast(
+            expr,
+            DataType::Timestamp(TimeUnit::Microsecond, Some(Arc::clone(timezone))),
+        ),
+        _ => expr,
+    };
+    let null = |expr: Expr, data_type: &DataType| match &partner {
+        NullPartner::DayTimeInterval(_) => cast(expr, DataType::Duration(TimeUnit::Microsecond)),
+        NullPartner::OtherOperand => cast(expr, data_type.clone()),
+    };
+    match (&left_type, &right_type) {
+        (DataType::Null, data_type) if is_datetime(data_type) => {
+            (null(left, data_type), datetime(right, data_type))
+        }
+        (data_type, DataType::Null) if is_datetime(data_type) => {
+            (datetime(left, data_type), null(right, data_type))
+        }
+        _ => (left, right),
     }
 }
 

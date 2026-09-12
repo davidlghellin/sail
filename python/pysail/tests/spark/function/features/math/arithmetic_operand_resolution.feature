@@ -207,6 +207,8 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | calendar + ts | make_interval(0,1,0,1,0,0,0) | TIMESTAMP'2024-01-15 12:00:00' |
         | calendar + ts_ntz | make_interval(0,1,0,1,0,0,0) | TIMESTAMP_NTZ'2024-01-15 12:00:00' |
         | calendar + calendar | make_interval(0,1,0,1,0,0,0) | make_interval(0,1,0,1,0,0,0) |
+        | unull + date | NULL | DATE'2024-01-15' |
+        | date + unull | DATE'2024-01-15' | NULL |
 
     @sail-bug
     Scenario Outline: plus ansi-off: pair resolves (Sail rejects it): <case>
@@ -223,7 +225,6 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
       Examples:
         | case | l | r |
         | unull + str | NULL | '2' |
-        | unull + date | NULL | DATE'2024-01-15' |
         | null + str | CAST(NULL AS INT) | '2' |
         | tinyint + str | CAST(2 AS TINYINT) | '2' |
         | smallint + str | CAST(2 AS SMALLINT) | '2' |
@@ -243,7 +244,6 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | str + dec | '2' | CAST(2 AS DECIMAL(10,2)) |
         | str + str | '2' | '2' |
         | str + calendar | '2' | make_interval(0,1,0,1,0,0,0) |
-        | date + unull | DATE'2024-01-15' | NULL |
         | calendar + str | make_interval(0,1,0,1,0,0,0) | '2' |
 
     @spark-4
@@ -285,9 +285,8 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | ival_dt + time | INTERVAL '25' HOUR | TIME '12:00:00' |
         | ival_ds + time | INTERVAL '1 02:03:04' DAY TO SECOND | TIME '12:00:00' |
 
-    @sail-bug
     @spark-4.1
-    Scenario Outline: plus ansi-off: post-4.0 datetime pair resolves (Sail rejects it): <case>
+    Scenario Outline: plus ansi-off: post-4.0 datetime pair resolves: <case>
       Given config spark.sql.ansi.enabled = false
       And config spark.sql.timeType.enabled = true
       When query
@@ -489,6 +488,8 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | calendar + ts | make_interval(0,1,0,1,0,0,0) | TIMESTAMP'2024-01-15 12:00:00' |
         | calendar + ts_ntz | make_interval(0,1,0,1,0,0,0) | TIMESTAMP_NTZ'2024-01-15 12:00:00' |
         | calendar + calendar | make_interval(0,1,0,1,0,0,0) | make_interval(0,1,0,1,0,0,0) |
+        | unull + date | NULL | DATE'2024-01-15' |
+        | date + unull | DATE'2024-01-15' | NULL |
 
     @sail-bug
     Scenario Outline: plus ansi-on: pair resolves (Sail rejects it): <case>
@@ -504,7 +505,6 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
 
       Examples:
         | case | l | r |
-        | unull + date | NULL | DATE'2024-01-15' |
         | null + str | CAST(NULL AS INT) | '2' |
         | tinyint + str | CAST(2 AS TINYINT) | '2' |
         | smallint + str | CAST(2 AS SMALLINT) | '2' |
@@ -522,7 +522,6 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | str + double | '2' | CAST(2 AS DOUBLE) |
         | str + dec | '2' | CAST(2 AS DECIMAL(10,2)) |
         | str + calendar | '2' | make_interval(0,1,0,1,0,0,0) |
-        | date + unull | DATE'2024-01-15' | NULL |
         | calendar + str | make_interval(0,1,0,1,0,0,0) | '2' |
 
     @spark-4
@@ -564,9 +563,8 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | ival_dt + time | INTERVAL '25' HOUR | TIME '12:00:00' |
         | ival_ds + time | INTERVAL '1 02:03:04' DAY TO SECOND | TIME '12:00:00' |
 
-    @sail-bug
     @spark-4.1
-    Scenario Outline: plus ansi-on: post-4.0 datetime pair resolves (Sail rejects it): <case>
+    Scenario Outline: plus ansi-on: post-4.0 datetime pair resolves: <case>
       Given config spark.sql.ansi.enabled = true
       And config spark.sql.timeType.enabled = true
       When query
@@ -2477,7 +2475,7 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
   Rule: a date shifted by a difference of two dates resolves
 
     # Spark types `datediff` as INT and `date - date` as INTERVAL DAY, and a DATE takes both. Sail
-    # computes both as a BIGINT day count, so these pin that the date-offset rule lets them through.
+    # now types them the same way, so these pin that a DATE still takes both offsets.
     Scenario Outline: a date shifted by a day difference: <case>
       When query
         """
@@ -2493,8 +2491,7 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | date minus date_diff  | DATE'2024-01-01' - date_diff(DATE'2024-01-01', DATE'2023-12-25') | 2023-12-25 |
         | date plus a date diff | DATE'2024-02-01' + (DATE'2024-01-10' - DATE'2024-01-01')         | 2024-02-10 |
 
-    # The root of the rule above: Sail types all three as BIGINT.
-    @sail-bug
+    # The root of the rule above, asserted directly.
     Scenario Outline: a day difference has Spark's result type: <case>
       When query
         """
@@ -2505,7 +2502,139 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | <t> |
 
       Examples:
-        | case        | expr                                          | t            |
-        | datediff    | datediff(DATE'2024-01-10', DATE'2024-01-01')  | int          |
-        | date_diff   | date_diff(DATE'2024-01-10', DATE'2024-01-01') | int          |
-        | date - date | DATE'2024-01-10' - DATE'2024-01-01'           | interval day |
+        | case      | expr                                          | t   |
+        | datediff  | datediff(DATE'2024-01-10', DATE'2024-01-01')  | int |
+        | date_diff | date_diff(DATE'2024-01-10', DATE'2024-01-01') | int |
+
+    # `date - date` now yields a day-time interval, the class Spark yields, but Sail has one single
+    # spelling for it: `Duration(Microsecond)` renders as `interval day to second` whatever the
+    # fields were. Carrying the declared field range needs the interval metadata work of
+    # `fix/interval`; until then only the range diverges, not the class.
+    @sail-bug
+    Scenario: a difference of two dates has Spark's declared field range
+      When query
+        """
+        SELECT typeof(DATE'2024-01-10' - DATE'2024-01-01') AS t
+        """
+      Then query result
+        | t            |
+        | interval day |
+
+  Rule: an untyped NULL beside a datetime takes the type Spark gives it
+
+    # A bare `NULL` is `NullType`, and Spark does NOT leave it there. For `+`, whichever side is
+    # the NULL is cast to a day-time interval -- `BinaryArithmeticWithDatetimeResolver.scala:88,91`,
+    # `a.copy(right = Cast(a.right, DayTimeIntervalType.DEFAULT))` -- and for `-` it takes the
+    # OTHER operand's own type (`:119,121`). Sail left it as `Null`, which DataFusion cannot
+    # coerce, so it REFUSED twelve pairs Spark answers. These assert the pair resolves at all,
+    # which is the divergence that mattered; the exact type is asserted below.
+    #
+    # ANSI is not an axis: all twenty-four cells were measured under both modes on the JVM and
+    # neither the verdict nor the type changes, so one mode is the whole contract.
+    Scenario Outline: an untyped NULL beside a <case> resolves
+      When query
+        """
+        SELECT typeof(<expression>) IS NOT NULL AS resolved
+        """
+      Then query result
+        | resolved |
+        | true     |
+
+      Examples:
+        | case                 | expression                                |
+        | date + null          | DATE'2024-01-15' + NULL                   |
+        | null + date          | NULL + DATE'2024-01-15'                   |
+        | timestamp + null     | TIMESTAMP'2024-01-15 01:02:03' + NULL     |
+        | null + timestamp     | NULL + TIMESTAMP'2024-01-15 01:02:03'     |
+        | timestamp_ntz + null | TIMESTAMP_NTZ'2024-01-15 01:02:03' + NULL |
+        | null + timestamp_ntz | NULL + TIMESTAMP_NTZ'2024-01-15 01:02:03' |
+        | time + null          | TIME '01:02:03' + NULL                    |
+        | null + time          | NULL + TIME '01:02:03'                    |
+        | date - null          | DATE'2024-01-15' - NULL                   |
+        | null - date          | NULL - DATE'2024-01-15'                   |
+        | timestamp - null     | TIMESTAMP'2024-01-15 01:02:03' - NULL     |
+        | null - timestamp     | NULL - TIMESTAMP'2024-01-15 01:02:03'     |
+        | timestamp_ntz - null | TIMESTAMP_NTZ'2024-01-15 01:02:03' - NULL |
+        | time - null          | TIME '01:02:03' - NULL                    |
+        | null - time          | NULL - TIME '01:02:03'                    |
+
+    # The cast the resolver inserts decides the result type, and Sail agrees on all nine: `+`
+    # gives back the datetime -- a DATE promoted to a TIMESTAMP, because the interval the resolver
+    # inserts is DAY TO SECOND and `:69` widens the date for anything past DAY -- and `-` gives a
+    # day-time interval.
+    Scenario Outline: an untyped NULL beside a <case> is typed <type>
+      When query
+        """
+        SELECT typeof(<expression>) AS t
+        """
+      Then query result
+        | t      |
+        | <type> |
+
+      Examples:
+        | case                 | expression                                | type                   |
+        | date + null          | DATE'2024-01-15' + NULL                   | timestamp              |
+        | null + date          | NULL + DATE'2024-01-15'                   | timestamp              |
+        | timestamp + null     | TIMESTAMP'2024-01-15 01:02:03' + NULL     | timestamp              |
+        | null + timestamp     | NULL + TIMESTAMP'2024-01-15 01:02:03'     | timestamp              |
+        | timestamp_ntz + null | TIMESTAMP_NTZ'2024-01-15 01:02:03' + NULL | timestamp_ntz          |
+        | null + timestamp_ntz | NULL + TIMESTAMP_NTZ'2024-01-15 01:02:03' | timestamp_ntz          |
+        | time + null          | TIME '01:02:03' + NULL                    | time(6)                |
+        | null + time          | NULL + TIME '01:02:03'                    | time(6)                |
+        | timestamp - null     | TIMESTAMP'2024-01-15 01:02:03' - NULL     | interval day to second |
+        | null - timestamp     | NULL - TIMESTAMP'2024-01-15 01:02:03'     | interval day to second |
+        | timestamp_ntz - null | TIMESTAMP_NTZ'2024-01-15 01:02:03' - NULL | interval day to second |
+
+    # What is left is not about the NULL at all: `date - date` is `INTERVAL DAY` and
+    # `time - time` is `INTERVAL HOUR TO SECOND`, and Sail spells every day-time interval
+    # `DAY TO SECOND` because an Arrow `Duration` carries no declared field range. Same root as
+    # `date - date` itself; it goes with `fix/interval`.
+    @sail-bug
+    Scenario Outline: an untyped NULL beside a <case> is typed <type>, which Sail does not spell
+      When query
+        """
+        SELECT typeof(<expression>) AS t
+        """
+      Then query result
+        | t      |
+        | <type> |
+
+      Examples:
+        | case        | expression              | type                    |
+        | date - null | DATE'2024-01-15' - NULL | interval day            |
+        | null - date | NULL - DATE'2024-01-15' | interval day            |
+        | time - null | TIME '01:02:03' - NULL  | interval hour to second |
+        | null - time | NULL - TIME '01:02:03'  | interval hour to second |
+
+  Rule: a DATE minus a TIMESTAMP is subtracted as two timestamps
+
+    # `BinaryArithmeticWithDatetimeResolver.scala:139-141` sends the pair to `SubtractTimestamps`
+    # whenever EITHER side is a timestamp -- that arm comes before the `SubtractDates` one -- so
+    # the DATE is read as a timestamp, midnight in the SESSION time zone, and the result is a
+    # DAY TO SECOND interval.
+    #
+    # Sail had two faults in this one cell. DataFusion's own coercion reads the DATE as midnight
+    # UTC, so under any other zone the answer was off by the offset: a WRONG VALUE, not a refusal.
+    # And it produced `Duration(Nanosecond)`, which has no Spark type, so the query died reporting
+    # its own schema (`cast Duration(Nanosecond) to Spark data type`). The time zone is the
+    # discriminating axis here: run only in UTC and both faults are invisible.
+    Scenario Outline: <case> in <timezone> is a day-time interval
+      Given config spark.sql.session.timeZone = <timezone>
+      When query
+        """
+        SELECT typeof(<expression>) AS t, CAST(<expression> AS STRING) AS v
+        """
+      Then query result
+        | t      | v       |
+        | <type> | <value> |
+
+      Examples:
+        | case         | timezone         | expression                                            | type                   | value                                |
+        | date - ts    | UTC              | DATE'2024-01-15' - TIMESTAMP'2024-01-15 06:00:00'     | interval day to second | INTERVAL '-0 06:00:00' DAY TO SECOND |
+        | date - ts    | America/New_York | DATE'2024-01-15' - TIMESTAMP'2024-01-15 06:00:00'     | interval day to second | INTERVAL '-0 06:00:00' DAY TO SECOND |
+        | ts - date    | UTC              | TIMESTAMP'2024-01-15 06:00:00' - DATE'2024-01-15'     | interval day to second | INTERVAL '0 06:00:00' DAY TO SECOND  |
+        | ts - date    | America/New_York | TIMESTAMP'2024-01-15 06:00:00' - DATE'2024-01-15'     | interval day to second | INTERVAL '0 06:00:00' DAY TO SECOND  |
+        | date - ntz   | UTC              | DATE'2024-01-15' - TIMESTAMP_NTZ'2024-01-15 06:00:00' | interval day to second | INTERVAL '-0 06:00:00' DAY TO SECOND |
+        | date - ntz   | America/New_York | DATE'2024-01-15' - TIMESTAMP_NTZ'2024-01-15 06:00:00' | interval day to second | INTERVAL '-0 06:00:00' DAY TO SECOND |
+        | ntz - date   | UTC              | TIMESTAMP_NTZ'2024-01-15 06:00:00' - DATE'2024-01-15' | interval day to second | INTERVAL '0 06:00:00' DAY TO SECOND  |
+        | ntz - date   | America/New_York | TIMESTAMP_NTZ'2024-01-15 06:00:00' - DATE'2024-01-15' | interval day to second | INTERVAL '0 06:00:00' DAY TO SECOND  |

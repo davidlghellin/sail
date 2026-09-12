@@ -6808,10 +6808,10 @@ Feature: arithmetic operand-type REJECTION matrix (+ - * / %) vs Spark 4.2.0
 
     # `DateAdd`/`DateSub` take `IntegerType | ShortType | ByteType`
     # (`datetimeExpressions.scala:331,371`), so Spark rejects a BIGINT offset. Sail accepts it on
-    # purpose: it types `datediff`, `date_diff` and `date - date` as BIGINT where Spark types them
-    # INT / INTERVAL DAY, so refusing BIGINT here would refuse
-    # `SELECT DATE'2020-01-01' + datediff(...)` once the value crosses a projection boundary --
-    # a query Spark answers. Drop this Rule once those three carry Spark's result types.
+    # purpose: it still types `regexp_count` and `regexp_instr` as BIGINT where Spark types them
+    # INT, so refusing BIGINT here would refuse `SELECT DATE'2020-01-01' + regexp_count(...)`
+    # once the value crosses a projection boundary -- a query Spark answers. Drop this Rule once
+    # every function that can produce an offset carries Spark's result type.
     @sail-bug
     Scenario Outline: a BIGINT offset is rejected: <case>
       Given config spark.sql.ansi.enabled = <ansi>
