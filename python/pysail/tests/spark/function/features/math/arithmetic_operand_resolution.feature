@@ -2465,3 +2465,39 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | case | col |
         | uint32 offset | u32 |
         | uint64 offset | u64 |
+
+  Rule: a date shifted by a difference of two dates resolves
+
+    # Spark types `datediff` as INT and `date - date` as INTERVAL DAY, and a DATE takes both. Sail
+    # computes both as a BIGINT day count, so these pin that the date-offset rule lets them through.
+    Scenario Outline: a date shifted by a day difference: <case>
+      When query
+        """
+        SELECT <expr> AS r
+        """
+      Then query result
+        | r   |
+        | <r> |
+
+      Examples:
+        | case                  | expr                                                             | r          |
+        | date plus datediff    | DATE'2024-01-01' + datediff(DATE'2024-01-01', DATE'2023-12-25')  | 2024-01-08 |
+        | date minus date_diff  | DATE'2024-01-01' - date_diff(DATE'2024-01-01', DATE'2023-12-25') | 2023-12-25 |
+        | date plus a date diff | DATE'2024-02-01' + (DATE'2024-01-10' - DATE'2024-01-01')         | 2024-02-10 |
+
+    # The root of the rule above: Sail types all three as BIGINT.
+    @sail-bug
+    Scenario Outline: a day difference has Spark's result type: <case>
+      When query
+        """
+        SELECT typeof(<expr>) AS t
+        """
+      Then query result
+        | t   |
+        | <t> |
+
+      Examples:
+        | case        | expr                                          | t            |
+        | datediff    | datediff(DATE'2024-01-10', DATE'2024-01-01')  | int          |
+        | date_diff   | date_diff(DATE'2024-01-10', DATE'2024-01-01') | int          |
+        | date - date | DATE'2024-01-10' - DATE'2024-01-01'           | interval day |

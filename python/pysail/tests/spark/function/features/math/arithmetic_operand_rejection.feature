@@ -6705,27 +6705,27 @@ Feature: arithmetic operand-type REJECTION matrix (+ - * / %) vs Spark 4.2.0
       Then query error (?i)cannot resolve.*STRUCT<a: INT COMMENT 'note'>
 
     # Spark escapes a single quote in the comment as `\'` (`QuotingUtils.escapeSingleQuotedString`).
-    # The `.` stands for that backslash: it matches `it\'s` and fails on an unescaped `it's`.
+    # A step line keeps its backslashes, so `\\'` matches that escape and nothing else.
     Scenario: a single quote in a nested field COMMENT is escaped
       When query
         """
         SELECT CAST(named_struct('a', 1) AS STRUCT<a: INT COMMENT 'it\'s'>) + 1
         """
-      Then query error (?i)cannot resolve.*STRUCT<a: INT COMMENT 'it.'s'>
+      Then query error (?i:cannot resolve).*STRUCT<a: INT COMMENT 'it\\'s'>
 
     Scenario: a BOOLEAN operand is named BOOLEAN
       When query
         """
         SELECT true / 2
         """
-      Then query error (?i)cannot resolve.*BOOLEAN
+      Then query error (?i:cannot resolve).*\bBOOLEAN\b
 
     Scenario: a BINARY operand is named BINARY
       When query
         """
         SELECT CAST('6' AS BINARY) % 2
         """
-      Then query error (?i)cannot resolve.*BINARY
+      Then query error (?i:cannot resolve).*\bBINARY\b
 
     @spark-4.1
     Scenario: a TIME operand carries its precision
@@ -6738,14 +6738,14 @@ Feature: arithmetic operand-type REJECTION matrix (+ - * / %) vs Spark 4.2.0
 
     # Spark's legacy CalendarIntervalType is plain `INTERVAL` (`CalendarIntervalType.scala:40`),
     # NOT `INTERVAL DAY TO SECOND` -- Spark says `the binary operator requires the input type
-    # "NUMERIC", not "INTERVAL"`. The negative lookahead is what makes this discriminating: it
-    # fails if the name widens back to `INTERVAL DAY TO SECOND` or `INTERVAL YEAR TO MONTH`.
+    # "NUMERIC", not "INTERVAL"`. The type is matched case-sensitively and must not be followed by
+    # another word or `(`, so neither a longer interval name nor Arrow's `Interval(...)` passes.
     Scenario: a calendar INTERVAL operand is named INTERVAL, not the day-time spelling
       When query
         """
         SELECT make_interval(0, 1, 0, 1, 0, 0, 0) % make_interval(0, 1, 0, 1, 0, 0, 0)
         """
-      Then query error (?i)cannot resolve.*\bINTERVAL\b(?!\s+(DAY|YEAR))
+      Then query error (?i:cannot resolve).*\bINTERVAL\b(?! ?[A-Z(])
 
 
     # Sail stores GEOMETRY/GEOGRAPHY as Arrow `Binary` and keeps the extension metadata on

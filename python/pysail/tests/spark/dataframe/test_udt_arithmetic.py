@@ -56,6 +56,15 @@ def test_nested_udt_is_named_by_its_storage_type(spark):
         pytest.param("arr[0]", id="array-index"),
         pytest.param("element_at(arr, 1)", id="element_at"),
         pytest.param("m['k']", id="map-value"),
+        pytest.param(
+            "array(a)[0]",
+            id="array-constructor",
+            marks=pytest.mark.xfail(
+                not is_jvm_spark(),
+                strict=True,
+                reason="array() builds its element field without the UDT metadata",
+            ),
+        ),
     ],
 )
 def test_udt_reached_through_an_expression_is_rejected(spark, operand):
@@ -99,6 +108,15 @@ def test_udt_reached_through_an_expression_is_rejected(spark, operand):
             "(SELECT a AS u FROM udt_relation_operand UNION ALL SELECT a AS u FROM udt_relation_operand)",
             id="union",
         ),
+        pytest.param(
+            "SELECT max_by(a, k) / 1 FROM udt_relation_operand",
+            id="max_by",
+            marks=pytest.mark.xfail(
+                not is_jvm_spark(),
+                strict=True,
+                reason="max_by builds its result field without the UDT metadata",
+            ),
+        ),
     ],
 )
 def test_udt_reached_through_an_aggregate_window_or_relation_is_rejected(spark, query):
@@ -109,3 +127,39 @@ def test_udt_reached_through_an_aggregate_window_or_relation_is_rejected(spark, 
     spark.createDataFrame(data=[], schema=schema).createOrReplaceTempView("udt_relation_operand")
     with pytest.raises(AnalysisException, match=r"(?i)cannot resolve"):
         spark.sql(query).collect()
+
+
+@pytest.mark.parametrize("ansi_enabled", ["false", "true"])
+@pytest.mark.parametrize(
+    "expression",
+    [
+        pytest.param("CAST(a AS STRING) / 1", id="cast"),
+        pytest.param("TRY_CAST(a AS STRING) / 1", id="try_cast"),
+        pytest.param("coalesce(CAST(a AS STRING), '0') / 1", id="coalesce-of-cast"),
+        pytest.param("CAST(CAST(a AS STRING) AS INT) + 1", id="cast-to-int"),
+    ],
+)
+def test_udt_cast_to_a_plain_type_is_a_plain_operand(spark, udt_view, ansi_enabled, expression):
+    # A cast yields its target type, so `CAST(udt AS STRING)` is a plain STRING in Spark and the
+    # arithmetic resolves. DataFusion copies the source field's metadata onto the cast, so the
+    # guard must not read the UDT marker through it.
+    previous = spark.conf.get("spark.sql.ansi.enabled")
+    spark.conf.set("spark.sql.ansi.enabled", ansi_enabled)
+    try:
+        assert spark.sql(f"SELECT {expression} AS r FROM {udt_view}").collect() == []  # noqa: S608
+    finally:
+        spark.conf.set("spark.sql.ansi.enabled", previous)
+
+
+@pytest.mark.xfail(
+    not is_jvm_spark(),
+    strict=True,
+    reason="a column projected from a cast keeps the UDT metadata in the plan schema",
+)
+def test_udt_cast_projected_by_a_subquery_is_a_plain_operand(spark, udt_view):
+    # The cast's output field must not carry the UDT metadata, or the column a subquery projects
+    # from it is judged a UDT and arithmetic Spark resolves is rejected. Neutralising the marker
+    # through the alias metadata does not work: the physical plan rebuilds the field from the
+    # source and Sail then reports `Schema field unallowed change`.
+    query = f"SELECT x / 1 AS r FROM (SELECT CAST(a AS STRING) AS x FROM {udt_view})"  # noqa: S608
+    assert spark.sql(query).collect() == []

@@ -737,9 +737,8 @@ def test_parquet_arithmetic_operand_rejection(spark, tmp_path):
             spark.sql(f"SELECT fsb {op} 1 FROM arithmetic_operands").collect()  # noqa: S608
 
     # `DateAdd` takes a BYTE, SHORT or INT offset (`datetimeExpressions.scala:331`).
-    # Both engines accept the two narrow widths and reject the two wide ones, by
-    # different routes: Spark reads u32 as BIGINT and rejects the width, Sail
-    # keeps it unsigned and rejects the signedness.
+    # Both engines accept the two narrow widths and reject the two wide ones, which both
+    # name the way Spark reads them: u32 as BIGINT, u64 as DECIMAL(20,0).
     for column in ["u8", "u16"]:
         query = f"SELECT DATE'2024-01-01' + {column} AS r FROM arithmetic_operands"  # noqa: S608
         assert spark.sql(query).collect() == [Row(r=date(2024, 1, 2))]

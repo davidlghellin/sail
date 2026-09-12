@@ -100,8 +100,8 @@ fn spark_plus(input: ScalarFunctionInput) -> PlanResult<Expr> {
         );
         if let (Ok(left_type), Ok(right_type)) = (&left_type, &right_type)
             && rejects_add(
-                left_type,
-                right_type,
+                &date_offset_view(&left, left_type, function_context.schema),
+                &date_offset_view(&right, right_type, function_context.schema),
                 function_context.plan_config.ansi_mode,
             )
         {
@@ -189,8 +189,8 @@ fn spark_minus(input: ScalarFunctionInput) -> PlanResult<Expr> {
         );
         if let (Ok(left_type), Ok(right_type)) = (&left_type, &right_type)
             && rejects_subtract(
-                left_type,
-                right_type,
+                &date_offset_view(&left, left_type, function_context.schema),
+                &date_offset_view(&right, right_type, function_context.schema),
                 function_context.plan_config.ansi_mode,
             )
         {
@@ -1007,6 +1007,33 @@ fn is_date_offset_numeric(data_type: &DataType) -> bool {
     )
 }
 
+/// The type the date-offset rules should judge an operand by. Spark types `datediff`/`date_diff`
+/// as INT (`datetimeExpressions.scala:2522`) and `date - date` as `INTERVAL DAY`
+/// (`datetimeExpressions.scala:3616-3618`), and a DATE takes either. Sail computes all three as a
+/// BIGINT difference of the two dates, which the INT-width check would reject.
+///
+/// TODO: give `datediff`/`date_diff` and `date - date` Spark's result types, then drop this.
+fn date_offset_view(expr: &Expr, data_type: &DataType, schema: &DFSchemaRef) -> DataType {
+    let is_date = |expr: &Expr| {
+        let expr = match expr {
+            Expr::Cast(cast) => cast.expr.as_ref(),
+            other => other,
+        };
+        matches!(
+            expr.get_type(schema),
+            Ok(DataType::Date32 | DataType::Date64)
+        )
+    };
+    match expr {
+        Expr::BinaryExpr(BinaryExpr {
+            left,
+            op: Operator::Minus,
+            right,
+        }) if is_date(left) && is_date(right) => DataType::Int32,
+        _ => data_type.clone(),
+    }
+}
+
 /// Whether Spark rejects this operand pair for `*` (`Multiply`) at analysis. `*` accepts only
 /// numeric×numeric and interval×numeric (either order, with string→numeric coercion); a
 /// datetime, boolean, binary, or interval×interval pair is rejected. Left to DataFusion, several
@@ -1246,6 +1273,12 @@ fn rejects_udt_operand(
 /// access -- build their result field without it, so they are looked through to the value they
 /// return.
 fn operand_udt_field(expr: &Expr, schema: &DFSchemaRef) -> Option<FieldRef> {
+    // A cast yields its target type, never a UDT. DataFusion copies the source field's metadata
+    // onto the cast's output field, so without this stop `CAST(udt AS STRING)` would still read
+    // as a UDT and a query Spark resolves would be rejected.
+    if matches!(expr, Expr::Cast(_) | Expr::TryCast(_)) {
+        return None;
+    }
     if let Ok((_, field)) = expr.to_field(schema)
         && is_spark_udt_field(&field)
     {
