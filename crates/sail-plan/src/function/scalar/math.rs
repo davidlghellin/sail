@@ -12,6 +12,7 @@ use half::f16;
 use sail_common_datafusion::utils::items::ItemTaker;
 use sail_function::error::generic_exec_err;
 use sail_function::scalar::datetime::negate_duration::NegateDuration;
+use sail_function::scalar::datetime::spark_date::SparkDate;
 use sail_function::scalar::datetime::spark_interval::SparkDayTimeIntervalToCalendarInterval;
 use sail_function::scalar::datetime::spark_interval_scale::{
     SparkDivideCalendarInterval, SparkDivideDtInterval, SparkDivideYmInterval,
@@ -46,10 +47,17 @@ use crate::function::common::{
     ScalarFunction, ScalarFunctionInput, is_spark_udt_field, spark_field_type_name, spark_type_name,
 };
 
-fn add_day_time_interval_to_string(
+/// A string shifted by an interval is read as a TIMESTAMP, shifted, and written back as a string:
+/// `Cast(TimestampAddInterval(l, r), l.dataType)` for `+`, and the same with the interval negated
+/// for `-` (`BinaryArithmeticWithDatetimeResolver.scala:92-93,137-138`). That holds for the
+/// day-time interval and for the legacy calendar one alike; only `-` requires the string on the
+/// left, since Spark has no `interval - string` arm.
+fn shift_string_by_interval(
     string: Expr,
     interval: Expr,
     string_type: DataType,
+    interval_type: &DataType,
+    subtract: bool,
     session_timezone: Arc<str>,
     ansi_mode: bool,
 ) -> PlanResult<Expr> {
@@ -59,9 +67,15 @@ fn add_day_time_interval_to_string(
         false,
     )?)
     .call(vec![string]);
-    let calendar_interval =
-        ScalarUDF::from(SparkDayTimeIntervalToCalendarInterval::new()).call(vec![interval]);
-    let shifted = timestamp + calendar_interval;
+    let calendar_interval = match interval_type {
+        DataType::Interval(IntervalUnit::MonthDayNano) => interval,
+        _ => ScalarUDF::from(SparkDayTimeIntervalToCalendarInterval::new()).call(vec![interval]),
+    };
+    let shifted = if subtract {
+        timestamp - calendar_interval
+    } else {
+        timestamp + calendar_interval
+    };
     match string_type {
         DataType::Utf8 => Ok(ScalarUDF::from(SparkToUtf8::new()).call(vec![shifted])),
         DataType::LargeUtf8 => Ok(ScalarUDF::from(SparkToLargeUtf8::new()).call(vec![shifted])),
@@ -101,6 +115,12 @@ fn spark_plus(input: ScalarFunctionInput) -> PlanResult<Expr> {
         if let Some(error) = rejects_udt_operand("+", &left, &right, function_context.schema) {
             return Err(error);
         }
+        let (left, right) = promote_string_operands(
+            left,
+            right,
+            function_context.schema,
+            function_context.plan_config.ansi_mode,
+        );
         let (left, right) = cast_untyped_null_beside_datetime(
             left,
             right,
@@ -126,20 +146,48 @@ fn spark_plus(input: ScalarFunctionInput) -> PlanResult<Expr> {
             (
                 Ok(string_type @ (DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View)),
                 Ok(DataType::Duration(TimeUnit::Microsecond)),
-            ) => add_day_time_interval_to_string(
+            ) => shift_string_by_interval(
                 left,
                 right,
                 string_type,
+                &DataType::Duration(TimeUnit::Microsecond),
+                false,
                 Arc::clone(&function_context.plan_config.session_timezone),
                 function_context.plan_config.ansi_mode,
             )?,
             (
                 Ok(DataType::Duration(TimeUnit::Microsecond)),
                 Ok(string_type @ (DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View)),
-            ) => add_day_time_interval_to_string(
+            ) => shift_string_by_interval(
                 right,
                 left,
                 string_type,
+                &DataType::Duration(TimeUnit::Microsecond),
+                false,
+                Arc::clone(&function_context.plan_config.session_timezone),
+                function_context.plan_config.ansi_mode,
+            )?,
+            (
+                Ok(string_type @ (DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View)),
+                Ok(interval_type @ DataType::Interval(IntervalUnit::MonthDayNano)),
+            ) => shift_string_by_interval(
+                left,
+                right,
+                string_type,
+                &interval_type,
+                false,
+                Arc::clone(&function_context.plan_config.session_timezone),
+                function_context.plan_config.ansi_mode,
+            )?,
+            (
+                Ok(interval_type @ DataType::Interval(IntervalUnit::MonthDayNano)),
+                Ok(string_type @ (DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View)),
+            ) => shift_string_by_interval(
+                right,
+                left,
+                string_type,
+                &interval_type,
+                false,
                 Arc::clone(&function_context.plan_config.session_timezone),
                 function_context.plan_config.ansi_mode,
             )?,
@@ -212,12 +260,25 @@ fn spark_minus(input: ScalarFunctionInput) -> PlanResult<Expr> {
         if let Some(error) = rejects_udt_operand("-", &left, &right, function_context.schema) {
             return Err(error);
         }
+        let (left, right) = promote_string_operands(
+            left,
+            right,
+            function_context.schema,
+            function_context.plan_config.ansi_mode,
+        );
         let (left, right) = cast_untyped_null_beside_datetime(
             left,
             right,
             function_context.schema,
             NullPartner::OtherOperand,
         );
+        let (left, right) = promote_string_beside_datetime(
+            left,
+            right,
+            function_context.schema,
+            &function_context.plan_config.session_timezone,
+            function_context.plan_config.ansi_mode,
+        )?;
         let (left_type, right_type) = (
             left.get_type(function_context.schema),
             right.get_type(function_context.schema),
@@ -232,6 +293,21 @@ fn spark_minus(input: ScalarFunctionInput) -> PlanResult<Expr> {
             return Err(arithmetic_operand_error("-", left_type, right_type));
         }
         Ok(match (left_type, right_type) {
+            (
+                Ok(string_type @ (DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View)),
+                Ok(
+                    interval_type @ (DataType::Duration(TimeUnit::Microsecond)
+                    | DataType::Interval(IntervalUnit::MonthDayNano)),
+                ),
+            ) => shift_string_by_interval(
+                left,
+                right,
+                string_type,
+                &interval_type,
+                true,
+                Arc::clone(&function_context.plan_config.session_timezone),
+                function_context.plan_config.ansi_mode,
+            )?,
             // `SubtractTimes` returns a day-time interval (`timeExpressions.scala:632`), but
             // DataFusion coerces a `Time64` pair to `Interval(MonthDayNano)` -- the CALENDAR
             // interval, which combines with nothing day-time. Cast to `Duration` to restore the
@@ -311,6 +387,12 @@ fn spark_multiply(input: ScalarFunctionInput) -> PlanResult<Expr> {
     if let Some(error) = rejects_udt_operand("*", &left, &right, function_context.schema) {
         return Err(error);
     }
+    let (left, right) = promote_string_operands(
+        left,
+        right,
+        function_context.schema,
+        function_context.plan_config.ansi_mode,
+    );
     let (left_type, right_type) = (
         left.get_type(function_context.schema),
         right.get_type(function_context.schema),
@@ -770,6 +852,12 @@ fn spark_modulo(input: ScalarFunctionInput) -> PlanResult<Expr> {
     if let Some(error) = rejects_udt_operand("%", &dividend, &divisor, function_context.schema) {
         return Err(error);
     }
+    let (dividend, divisor) = promote_string_operands(
+        dividend,
+        divisor,
+        function_context.schema,
+        function_context.plan_config.ansi_mode,
+    );
 
     let ansi_mode = function_context.plan_config.ansi_mode;
     let divisor_type = divisor.get_type(function_context.schema);
@@ -1121,6 +1209,104 @@ fn is_date_offset_numeric(data_type: &DataType) -> bool {
             | DataType::UInt16
             | DataType::UInt32
     )
+}
+
+/// Spark promotes a STRING operand of `+`, `-`, `*` and `%` to a number before the operator ever
+/// sees it, and the two ANSI modes do it DIFFERENTLY -- the same `'2' + 1` is a DOUBLE with ANSI off
+/// and a BIGINT with it on:
+///
+/// * ANSI off, `StringPromotionTypeCoercion.scala`: a string beside anything but an interval is cast
+///   to DOUBLE, alone. Two strings both go, and so does a string beside an untyped `NULL`.
+/// * ANSI on, `AnsiStringPromotionTypeCoercion.findWiderTypeForString`: BOTH operands are cast to
+///   BIGINT when the partner is integral and to DOUBLE when it is fractional or decimal. A string
+///   beside another string or a `NULL` is not promoted, which is why the guards still reject it.
+///
+/// The cast follows the mode too: ANSI off reads a malformed string as NULL (`try_cast`), ANSI on
+/// raises. Without this Sail handed DataFusion a `Utf8` operand it cannot coerce, and refused every
+/// one of these pairs -- queries Spark answers.
+fn promote_string_operands(
+    left: Expr,
+    right: Expr,
+    schema: &DFSchemaRef,
+    ansi_mode: bool,
+) -> (Expr, Expr) {
+    use OperandRole::*;
+    let (Ok(left_type), Ok(right_type)) = (left.get_type(schema), right.get_type(schema)) else {
+        return (left, right);
+    };
+    let (left_role, right_role) = (operand_role(&left_type), operand_role(&right_type));
+    if !ansi_mode {
+        let promotes = |partner: OperandRole| matches!(partner, Numeric | Str | UntypedNull);
+        let left = if left_role == Str && promotes(right_role) {
+            try_cast(left, DataType::Float64)
+        } else {
+            left
+        };
+        let right = if right_role == Str && promotes(left_role) {
+            try_cast(right, DataType::Float64)
+        } else {
+            right
+        };
+        return (left, right);
+    }
+    let target = match (left_role, right_role) {
+        (Str, Numeric) => Some(&right_type),
+        (Numeric, Str) => Some(&left_type),
+        _ => None,
+    };
+    match target {
+        Some(numeric) if numeric.is_integer() => {
+            (cast(left, DataType::Int64), cast(right, DataType::Int64))
+        }
+        Some(_) => (
+            cast(left, DataType::Float64),
+            cast(right, DataType::Float64),
+        ),
+        None => (left, right),
+    }
+}
+
+/// A string subtracted with a datetime is read AS that datetime -- but only in the cases Spark
+/// resolves, which are not symmetric across ANSI modes:
+///
+/// * ANSI on, `AnsiStringPromotionTypeCoercion.findWiderTypeForString` (`(StringType, AtomicType)
+///   => the atomic type`): the string becomes the DATE, TIMESTAMP, TIMESTAMP_NTZ or TIME beside it,
+///   in either operand order, and the pair is subtracted as two of those.
+/// * ANSI off: only `string - date` survives, through `SubtractDates`, whose implicit cast reads the
+///   string as a DATE (`BinaryArithmeticWithDatetimeResolver.scala:142`). `date - string` becomes a
+///   `DateSub` that wants an INT, and a timestamp or TIME pair is rejected -- measured on the JVM.
+fn promote_string_beside_datetime(
+    left: Expr,
+    right: Expr,
+    schema: &DFSchemaRef,
+    session_timezone: &Arc<str>,
+    ansi_mode: bool,
+) -> PlanResult<(Expr, Expr)> {
+    use OperandRole::*;
+    let (Ok(left_type), Ok(right_type)) = (left.get_type(schema), right.get_type(schema)) else {
+        return Ok((left, right));
+    };
+    let as_datetime = |string: Expr, datetime: &DataType| -> PlanResult<Expr> {
+        Ok(match datetime {
+            DataType::Date32 => ScalarUDF::from(SparkDate::new(!ansi_mode)).call(vec![string]),
+            DataType::Timestamp(TimeUnit::Microsecond, tz) => {
+                Arc::new(ScalarUDF::from(SparkTimestamp::try_new(
+                    tz.as_ref().map(|_| Arc::clone(session_timezone)),
+                    ansi_mode,
+                    false,
+                )?))
+                .call(vec![string])
+            }
+            other => cast(string, other.clone()),
+        })
+    };
+    let (left_role, right_role) = (operand_role(&left_type), operand_role(&right_type));
+    match (left_role, right_role) {
+        (Str, Date) => Ok((as_datetime(left, &right_type)?, right)),
+        (Str, Timestamp | Time) if ansi_mode => Ok((as_datetime(left, &right_type)?, right)),
+        (Date | Timestamp | Time, Str) if ansi_mode => Ok((left, as_datetime(right, &left_type)?)),
+        _ => Ok((left, right)),
+    }
 }
 
 /// What a bare `NULL` becomes when it sits next to a datetime.
