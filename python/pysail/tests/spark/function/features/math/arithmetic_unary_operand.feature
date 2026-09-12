@@ -1,0 +1,119 @@
+Feature: unary + and - operand types vs Spark 4.2.0
+
+  # The arity-1 sibling of `arithmetic_operand_rejection.feature`. `UnaryMinus` and `UnaryPositive`
+  # both declare `inputTypes = Seq(TypeCollection.NumericAndInterval)` (`arithmetic.scala:54,124`),
+  # so Spark rejects every operand that is neither numeric nor an interval -- the same rule the
+  # binary operators apply, one operand short.
+  #
+  # The full matrix is the same 28-token alphabet as the binary files, both operators, measured
+  # against the JVM: 56 cells, of which 34 are accepted by both engines and 22 rejected by Spark.
+  # Sail's `-` rejects the same 11 as Spark; its `+` accepts all of them, because the arity-1
+  # branch of `spark_plus` returns the operand unchanged with no guard at all.
+  #
+  # ANSI is NOT an axis here, and that is measured rather than assumed: all 112 cells were run
+  # under both modes and no verdict changes in either engine, unlike the binary files where ANSI
+  # flips 16 string rows. Running one mode is therefore the whole contract.
+
+  Rule: both unary operators accept a numeric, an interval or a string
+
+    Scenario Outline: unary <op> accepts a <case> operand
+      When query
+        """
+        SELECT typeof(<op>(<operand>)) IS NOT NULL AS resolved
+        """
+      Then query result
+        | resolved |
+        | true     |
+
+      Examples:
+        | op | case     | operand                        |
+        | +  | tinyint  | CAST(2 AS TINYINT)             |
+        | +  | smallint | CAST(2 AS SMALLINT)            |
+        | +  | int      | CAST(2 AS INT)                 |
+        | +  | bigint   | CAST(2 AS BIGINT)              |
+        | +  | float    | CAST(2 AS FLOAT)               |
+        | +  | double   | CAST(2 AS DOUBLE)              |
+        | +  | dec      | CAST(2 AS DECIMAL(10,2))       |
+        | +  | str      | '2'                            |
+        | +  | null     | CAST(NULL AS INT)              |
+        | +  | unull    | NULL                           |
+        | +  | ival_y   | INTERVAL '2' YEAR              |
+        | +  | ival_m   | INTERVAL '2' MONTH             |
+        | +  | ival_ym  | INTERVAL '1-2' YEAR TO MONTH   |
+        | +  | ival_d   | INTERVAL '2' DAY               |
+        | +  | ival_dt  | INTERVAL '25' HOUR             |
+        | +  | ival_ds  | INTERVAL '1 02:03:04' DAY TO SECOND |
+        | +  | calendar | make_interval(0,1,0,1,0,0,0)   |
+        | -  | tinyint  | CAST(2 AS TINYINT)             |
+        | -  | smallint | CAST(2 AS SMALLINT)            |
+        | -  | int      | CAST(2 AS INT)                 |
+        | -  | bigint   | CAST(2 AS BIGINT)              |
+        | -  | float    | CAST(2 AS FLOAT)               |
+        | -  | double   | CAST(2 AS DOUBLE)              |
+        | -  | dec      | CAST(2 AS DECIMAL(10,2))       |
+        | -  | str      | '2'                            |
+        | -  | null     | CAST(NULL AS INT)              |
+        | -  | unull    | NULL                           |
+        | -  | ival_y   | INTERVAL '2' YEAR              |
+        | -  | ival_m   | INTERVAL '2' MONTH             |
+        | -  | ival_ym  | INTERVAL '1-2' YEAR TO MONTH   |
+        | -  | ival_d   | INTERVAL '2' DAY               |
+        | -  | ival_dt  | INTERVAL '25' HOUR             |
+        | -  | ival_ds  | INTERVAL '1 02:03:04' DAY TO SECOND |
+        | -  | calendar | make_interval(0,1,0,1,0,0,0)   |
+
+  Rule: unary - rejects everything else
+
+    # Sail already REJECTS all eleven, so the accept/reject verdict matches Spark exactly -- what
+    # diverges is the message: DataFusion's `Failed to coerce arguments to satisfy a call to
+    # 'negative' function: ...`, which carries an Arrow `Debug` dump. That is the same leak the
+    # binary operators no longer have, so these are tagged for the wording, not for the verdict.
+    @sail-bug
+    Scenario Outline: unary minus rejects a <case> operand
+      When query
+        """
+        SELECT -(<operand>) AS result
+        """
+      Then query error (?i)cannot resolve
+
+      Examples:
+        | case    | operand                                                                   |
+        | bool    | true                                                                      |
+        | bin     | CAST('2' AS BINARY)                                                       |
+        | date    | DATE'2024-01-15'                                                          |
+        | ts      | TIMESTAMP'2024-01-15 12:00:00'                                            |
+        | ts_ntz  | TIMESTAMP_NTZ'2024-01-15 12:00:00'                                        |
+        | time    | TIME '12:00:00'                                                           |
+        | array   | array(1,2)                                                                |
+        | struct  | named_struct('a',1)                                                       |
+        | map     | map('a',1)                                                                |
+        | variant | parse_json('{"a":1}')                                                     |
+        | geom    | st_geomfromwkb(CAST('0101000000000000000000F03F000000000000F03F' AS BINARY)) |
+
+  Rule: unary + rejects everything else
+
+    # The 22 divergent cells of the matrix, in one place: Sail's arity-1 `+` is a bare identity,
+    # so every one of these comes back with the operand unchanged instead of failing analysis.
+    # The fix is the same guard the binary operators already have -- `operand_role` plus
+    # `arithmetic_operand_error` -- applied to the single operand.
+    @sail-bug
+    Scenario Outline: unary plus rejects a <case> operand
+      When query
+        """
+        SELECT +(<operand>) AS result
+        """
+      Then query error (?i)cannot resolve
+
+      Examples:
+        | case    | operand                                                                   |
+        | bool    | true                                                                      |
+        | bin     | CAST('2' AS BINARY)                                                       |
+        | date    | DATE'2024-01-15'                                                          |
+        | ts      | TIMESTAMP'2024-01-15 12:00:00'                                            |
+        | ts_ntz  | TIMESTAMP_NTZ'2024-01-15 12:00:00'                                        |
+        | time    | TIME '12:00:00'                                                           |
+        | array   | array(1,2)                                                                |
+        | struct  | named_struct('a',1)                                                       |
+        | map     | map('a',1)                                                                |
+        | variant | parse_json('{"a":1}')                                                     |
+        | geom    | st_geomfromwkb(CAST('0101000000000000000000F03F000000000000F03F' AS BINARY)) |
