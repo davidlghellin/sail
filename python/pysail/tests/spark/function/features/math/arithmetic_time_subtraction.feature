@@ -55,16 +55,45 @@ Feature: TIME subtraction result parity
       | a        | b        | c        |
       | 13:00:00 | 13:00:00 | 11:00:00 |
 
-  # NOT this PR's work -- the fix belongs with the ANSI/overflow PR. Pinned here only because the
+  # NOT this PR's work -- the fix belongs with the ANSI/overflow PR. Pinned here because the
   # `TIME +- interval` arms above turn a hard error into a WRONG VALUE: DataFusion wraps within
-  # the 24-hour clock, Spark raises `[DATETIME_OVERFLOW]` in both ANSI modes.
+  # the 24-hour clock, Spark raises `[DATETIME_OVERFLOW]` in both ANSI modes
+  # (`DateTimeUtils.scala:1098-1104`, from `timeExpressions.scala:594`). Every direction the wrap
+  # can go is pinned, not just one, so the overflow PR has a complete red target.
+  #
+  # A guard cannot land here: Sail's `typeof` EVALUATES its argument (see the scenario below), so
+  # raising on overflow would also turn red the `typeof(...) IS NOT NULL` rows this same matrix
+  # uses to assert resolution. The guard and those rows have to move together.
   @sail-bug
   @spark-4.1
-  Scenario: TIME arithmetic that leaves the day overflows
+  Scenario Outline: TIME arithmetic that leaves the day overflows: <case>
     Given config spark.sql.timeType.enabled = true
+    And config spark.sql.ansi.enabled = <ansi>
     When query
       """
-      SELECT TIME '23:30:00' + INTERVAL '2' HOUR AS result
+      SELECT <expression> AS result
       """
     Then query error (?i)DATETIME_OVERFLOW
 
+    Examples:
+      | case                     | ansi  | expression                                            |
+      | past midnight ansi-off   | false | TIME '23:30:00' + INTERVAL '2' HOUR                   |
+      | past midnight ansi-on    | true  | TIME '23:30:00' + INTERVAL '2' HOUR                   |
+      | before midnight          | true  | TIME '01:00:00' - INTERVAL '2' HOUR                   |
+      | a whole day              | true  | TIME '12:00:00' + INTERVAL '2' DAY                    |
+      | a TIME difference        | true  | TIME '23:00:00' + (TIME '12:00:00' - TIME '01:00:00') |
+      | the interval first       | true  | INTERVAL '2' HOUR + TIME '23:30:00'                   |
+
+  # Spark's `TypeOf` reports the type without evaluating the expression; Sail's evaluates it, so a
+  # runtime failure escapes from a query that only asked what the type would be. This is why the
+  # overflow guard above cannot be added without moving the resolution matrix's probe too.
+  @sail-bug
+  Scenario: typeof reports the type without evaluating the expression
+    Given config spark.sql.ansi.enabled = true
+    When query
+      """
+      SELECT typeof(CAST(1 AS INT) / CAST(0 AS INT)) AS result
+      """
+    Then query result
+      | result |
+      | double |

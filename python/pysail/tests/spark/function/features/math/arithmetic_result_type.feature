@@ -1,9 +1,10 @@
 Feature: arithmetic result types (+ - * / %) vs Spark 4.2.0
 
   # `arithmetic_operand_resolution.feature` asserts that a pair RESOLVES; this pins WHAT TYPE it
-  # resolves to, which that file declares out of its scope. Measured 2026-09-12 across its 1797
-  # resolving cells against Spark 4.2.0: 1177 agree and 225 differ, in 33 shapes. One scenario per
-  # root cause rather than per spelling, so 13 rows stand for the 225. None is fixed here -- the
+  # resolves to, which that file declares out of its scope. Measured 2026-09-12 against Spark
+  # 4.2.0 over the 1797 rows of that matrix: 1177 return the same type, 225 differ in 33 shapes,
+  # and the remaining 395 are the pairs Sail rejects outright, already pinned there. One scenario
+  # per root cause rather than per spelling, so 13 rows stand for the 225. None is fixed here -- the
   # operand-rejection work does not touch the coercion contract -- so every one is `@sail-bug`.
 
   Rule: an interval keeps the field range it was declared with

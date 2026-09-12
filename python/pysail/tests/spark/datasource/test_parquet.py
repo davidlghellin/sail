@@ -742,12 +742,20 @@ def test_parquet_arithmetic_operand_rejection(spark, tmp_path):
     # accepts every integral offset -- see `is_date_offset_numeric` -- because it types
     # `datediff` and `date - date` as BIGINT; the divergence is pinned in
     # `arithmetic_operand_resolution.feature`.
-    for column in ["u8", "u16", "u32"]:
+    # Spark reads UINT_32 as BIGINT and UINT_64 as DECIMAL(20,0), neither of which `DateAdd`
+    # accepts (`datetimeExpressions.scala:331-332`, and it is `ExpectsInputTypes`). Sail reads
+    # UINT_32 as INT and accepts every integral offset -- see `is_date_offset_numeric` -- because
+    # it types `datediff` and `date - date` as BIGINT. That divergence is pinned in
+    # `test_parquet_uint32_date_offset_is_named_bigint`, so here the engines part ways on `u32`.
+    accepted = ["u8", "u16"] if is_jvm_spark() else ["u8", "u16", "u32"]
+    for column in accepted:
         query = f"SELECT DATE'2024-01-01' + {column} AS r FROM arithmetic_operands"  # noqa: S608
         assert spark.sql(query).collect() == [Row(r=date(2024, 1, 2))]
-    # Spark reads UINT_64 as DECIMAL(20,0), which `DateAdd` refuses, and so does Sail.
-    with pytest.raises(AnalysisException, match=r"(?i)cannot resolve"):
-        spark.sql("SELECT DATE'2024-01-01' + u64 AS r FROM arithmetic_operands").collect()
+    rejected = ["u32", "u64"] if is_jvm_spark() else ["u64"]
+    for column in rejected:
+        query = f"SELECT DATE'2024-01-01' + {column} AS r FROM arithmetic_operands"  # noqa: S608
+        with pytest.raises(AnalysisException, match=r"(?i)cannot resolve"):
+            spark.sql(query).collect()
 
     # The same unsigned columns stay usable in ordinary numeric arithmetic.
     assert spark.sql("SELECT u32 * 2 AS r FROM arithmetic_operands").collect() == [Row(r=2)]
