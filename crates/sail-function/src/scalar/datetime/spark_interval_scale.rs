@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use datafusion::arrow::array::{ArrayRef, ArrowPrimitiveType, AsArray, PrimitiveArray};
+use datafusion::arrow::array::{ArrayRef, AsArray, IntervalMonthDayNanoArray, PrimitiveArray};
 use datafusion::arrow::compute::try_binary;
 use datafusion::arrow::datatypes::{
-    DataType, DurationMicrosecondType, Float64Type, Int64Type, IntervalUnit, IntervalYearMonthType,
-    TimeUnit,
+    DataType, DurationMicrosecondType, Float64Type, Int64Type, IntervalMonthDayNano,
+    IntervalMonthDayNanoType, IntervalUnit, IntervalYearMonthType, TimeUnit,
 };
 use datafusion::arrow::error::ArrowError;
 use datafusion_common::types::NativeType;
@@ -258,4 +258,162 @@ fn divide_fractional_i64(micros: i64, number: f64) -> std::result::Result<i64, A
         i64::MAX as f64,
     )?;
     Ok(scaled as i64)
+}
+
+/// Microseconds in a day, the unit Spark folds a fractional day into, and the step from Spark's
+/// storage to Sail's.
+const MICROS_PER_DAY: f64 = 24.0 * 60.0 * 60.0 * 1_000_000.0;
+const NANOS_PER_MICRO: f64 = 1_000.0;
+
+/// Spark scales the LEGACY calendar interval field by field, and it does NOT round the way the
+/// ANSI intervals do: months and days are TRUNCATED toward zero (`monthsWithFraction.toInt`),
+/// the fraction of a day left over is folded into the time part, and only that is rounded --
+/// with Scala's `Double.round`, which is `floor(x + 0.5)` and therefore rounds a tie toward
+/// POSITIVE INFINITY (`IntervalUtils.scala:634-658`). Measured, not assumed: `1 microsecond *
+/// -0.5` is `0` in Spark, where the ANSI rule would give `-1`.
+///
+/// This one DOES read `spark.sql.ansi.enabled` (`MultiplyInterval`'s `failOnError`,
+/// `intervalExpressions.scala:597-601`): with it on, a field that leaves `Int32` raises and a zero
+/// divisor raises; with it off the field saturates and a zero divisor yields NULL.
+macro_rules! calendar_scale_udf {
+    ($name:ident, $udf:literal, $spark:literal, $divide:expr) => {
+        #[derive(Debug, PartialEq, Eq, Hash)]
+        pub struct $name {
+            signature: Signature,
+            ansi_mode: bool,
+        }
+
+        impl $name {
+            pub fn new(ansi_mode: bool) -> Self {
+                Self {
+                    signature: Signature::user_defined(Volatility::Immutable),
+                    ansi_mode,
+                }
+            }
+
+            pub fn ansi_mode(&self) -> bool {
+                self.ansi_mode
+            }
+        }
+
+        impl ScalarUDFImpl for $name {
+            fn name(&self) -> &str {
+                $udf
+            }
+
+            fn signature(&self) -> &Signature {
+                &self.signature
+            }
+
+            fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
+                Ok(DataType::Interval(IntervalUnit::MonthDayNano))
+            }
+
+            fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+                let ScalarFunctionArgs {
+                    args, number_rows, ..
+                } = args;
+                if args.len() != 2 {
+                    return Err(invalid_arg_count_exec_err($spark, (2, 2), args.len()));
+                }
+                let interval = args[0].to_array(number_rows)?;
+                let number = args[1].to_array(number_rows)?;
+                let interval = interval.as_primitive::<IntervalMonthDayNanoType>();
+                let number = number.as_primitive::<Float64Type>();
+                let ansi_mode = self.ansi_mode;
+                let scaled: IntervalMonthDayNanoArray =
+                    try_binary(interval, number, |interval, number| {
+                        scale_calendar(interval, number, $divide, ansi_mode)
+                    })?;
+                Ok(ColumnarValue::Array(Arc::new(scaled) as ArrayRef))
+            }
+
+            /// `IntervalNumOperation.inputTypes` is `(CalendarIntervalType, DoubleType)`
+            /// (`intervalExpressions.scala:181`), so every number -- integral, decimal or string --
+            /// reaches the operation as a DOUBLE.
+            fn coerce_types(&self, arg_types: &[DataType]) -> Result<Vec<DataType>> {
+                let [interval, number] = arg_types else {
+                    return Err(invalid_arg_count_exec_err($spark, (2, 2), arg_types.len()));
+                };
+                if !matches!(interval, DataType::Interval(IntervalUnit::MonthDayNano)) {
+                    return plan_err!("Spark `{}` expects a calendar interval", $spark);
+                }
+                let native: NativeType = number.into();
+                if !(native.is_numeric() || matches!(native, NativeType::Null | NativeType::String))
+                {
+                    return plan_err!("Spark `{}` cannot scale by {number}", $spark);
+                }
+                Ok(vec![interval.clone(), DataType::Float64])
+            }
+        }
+    };
+}
+
+calendar_scale_udf!(
+    SparkMultiplyCalendarInterval,
+    "spark_multiply_calendar_interval",
+    "MultiplyInterval",
+    false
+);
+calendar_scale_udf!(
+    SparkDivideCalendarInterval,
+    "spark_divide_calendar_interval",
+    "DivideInterval",
+    true
+);
+
+/// One field of the interval, truncated toward zero. With ANSI on, leaving `Int32` raises the way
+/// `MathUtils.toIntExact` does; with it off the value saturates, which is what Scala's `.toInt`
+/// gives for a `Double` (`IntervalUtils.scala:638-639,655-657`), and what `as` gives in Rust.
+fn truncate_field(value: f64, ansi_mode: bool) -> std::result::Result<i32, ArrowError> {
+    if ansi_mode
+        && (!value.is_finite()
+            || value <= f64::from(i32::MIN) - 1.0
+            || value >= f64::from(i32::MAX) + 1.0)
+    {
+        return Err(ArrowError::ComputeError(
+            "[ARITHMETIC_OVERFLOW] integer overflow".to_string(),
+        ));
+    }
+    Ok(value as i32)
+}
+
+fn scale_calendar(
+    interval: IntervalMonthDayNano,
+    number: f64,
+    divide: bool,
+    ansi_mode: bool,
+) -> std::result::Result<IntervalMonthDayNano, ArrowError> {
+    if divide && number == 0.0 {
+        // With ANSI off Spark returns NULL here, but `try_binary` cannot produce one, so the
+        // caller sees the error; the plan keeps the NULL by testing the divisor before the call.
+        return Err(divided_by_zero());
+    }
+    let scale = |field: f64| {
+        if divide {
+            field / number
+        } else {
+            field * number
+        }
+    };
+    let months = scale(f64::from(interval.months));
+    let days = scale(f64::from(interval.days));
+    // Spark keeps the time part of a calendar interval in MICROSECONDS and Sail in nanoseconds, so
+    // the whole computation runs in micros and only the last step converts. That is not a detail:
+    // the rounding below has to land on a microsecond the way Spark's does, or
+    // `1 microsecond * 0.5` stays 500 nanoseconds here and reads `0.0000005 seconds` where Spark
+    // says `0.000001 seconds`.
+    let micros = scale(interval.nanoseconds as f64 / NANOS_PER_MICRO);
+
+    let truncated_days = truncate_field(days, ansi_mode)?;
+    // The fraction of a day that truncating threw away is not lost: Spark folds it into the time
+    // part, and rounds ONLY there.
+    let micros = micros + MICROS_PER_DAY * (days - f64::from(truncated_days));
+    // Scala's `Double.round`: `floor(x + 0.5)`, so a tie goes toward positive infinity.
+    let micros = (micros + 0.5).floor();
+    Ok(IntervalMonthDayNano::new(
+        truncate_field(months, ansi_mode)?,
+        truncated_days,
+        (micros * NANOS_PER_MICRO) as i64,
+    ))
 }

@@ -102,8 +102,9 @@ Feature: arithmetic result types (+ - * / %) vs Spark 4.2.0
   Rule: a calendar interval divided by a number stays an interval
 
     # `BinaryArithmeticWithDatetimeResolver.scala:158` rewrites it into `DivideInterval`. Sail
-    # coerces both sides to DOUBLE instead, losing the interval entirely.
-    @sail-bug
+    # used to coerce both sides to DOUBLE instead, losing the interval entirely -- and answering,
+    # so no rejection test could see it. `arithmetic_calendar_interval_scaling.feature` now pins
+    # the whole operation, value by value.
     Scenario: a calendar interval divided by a number is an interval
       When query
         """

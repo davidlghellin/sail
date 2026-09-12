@@ -54,16 +54,16 @@ def time_type_enabled(spark, value):
 def test_the_time_type_is_refused_when_the_flag_is_off(spark, expression):
     with (
         time_type_enabled(spark, "false"),
-        pytest.raises(AnalysisException, match="(?i)the data type TIME is not supported"),
+        pytest.raises(AnalysisException, match=r"(?i)the data type TIME is not supported"),
     ):
-        spark.sql(f"SELECT {expression} AS result").collect()  # noqa: S608
+        spark.sql(f"SELECT {expression} AS result").collect()
 
 
 @pytest.mark.skipif(not client_decodes_time, reason="the TIME type needs PySpark 4.1+")
 @pytest.mark.parametrize("expression", RESOLVING_TIME_EXPRESSIONS)
 def test_the_time_type_resolves_when_the_flag_is_on(spark, expression):
     with time_type_enabled(spark, "true"):
-        assert spark.sql(f"SELECT {expression} AS result").collect()[0][0].isoformat() == "01:02:03"  # noqa: S608
+        assert spark.sql(f"SELECT {expression} AS result").collect()[0][0].isoformat() == "01:02:03"
 
 
 @pytest.mark.xfail(
@@ -74,7 +74,7 @@ def test_the_time_type_resolves_when_the_flag_is_on(spark, expression):
 def test_the_time_type_is_refused_by_default(spark):
     # The deliberate superset: Sail answers where Spark refuses. Pinned so the day the default
     # changes -- or the day Spark turns the flag on -- this says so.
-    with pytest.raises(AnalysisException, match="(?i)the data type TIME is not supported"):
+    with pytest.raises(AnalysisException, match=r"(?i)the data type TIME is not supported"):
         spark.sql("SELECT TIME'01:02:03' AS result").collect()
 
 
@@ -93,9 +93,9 @@ UNSPELLED_TIME_EXPRESSIONS = [
 def test_a_time_nobody_spelled_is_refused_when_the_flag_is_off(spark, expression):
     with (
         time_type_enabled(spark, "false"),
-        pytest.raises(AnalysisException, match="(?i)the data type TIME is not supported"),
+        pytest.raises(AnalysisException, match=r"(?i)the data type TIME is not supported"),
     ):
-        spark.sql(f"SELECT {expression} AS result").collect()  # noqa: S608
+        spark.sql(f"SELECT {expression} AS result").collect()
 
 
 def test_a_file_whose_schema_has_a_time_column_is_refused_when_the_flag_is_off(spark, tmp_path):
@@ -104,7 +104,7 @@ def test_a_file_whose_schema_has_a_time_column_is_refused_when_the_flag_is_off(s
         spark.sql("SELECT TIME'01:02:03' AS t").write.mode("overwrite").parquet(location)
     with (
         time_type_enabled(spark, "false"),
-        pytest.raises(AnalysisException, match="(?i)the data type TIME is not supported"),
+        pytest.raises(AnalysisException, match=r"(?i)the data type TIME is not supported"),
     ):
         spark.read.parquet(location).collect()
 
@@ -123,6 +123,6 @@ def test_a_time_column_is_refused_even_when_the_projection_drops_it(spark, tmp_p
         spark.sql("SELECT TIME'01:02:03' AS t").write.mode("overwrite").parquet(location)
     with (
         time_type_enabled(spark, "false"),
-        pytest.raises(AnalysisException, match="(?i)the data type TIME is not supported"),
+        pytest.raises(AnalysisException, match=r"(?i)the data type TIME is not supported"),
     ):
         spark.read.parquet(location).selectExpr("1 AS x").collect()

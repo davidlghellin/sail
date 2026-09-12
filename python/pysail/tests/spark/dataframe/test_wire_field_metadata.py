@@ -99,7 +99,7 @@ def test_a_field_without_metadata_carries_no_blob(spark):
 def test_a_comment_in_a_sql_type_reaches_the_wire(spark, expression):
     # Inside the plan the comment is a loose `comment` key, which Delta and the catalogs read
     # directly; it is folded into the blob on the way out, at whatever depth it sits.
-    metadata = wire_metadata(spark.sql(f"SELECT {expression} AS c"))  # noqa: S608
+    metadata = wire_metadata(spark.sql(f"SELECT {expression} AS c"))
     assert spark_metadata(field_ending_in(metadata, ".a")) == {"comment": "note"}
 
 
@@ -131,12 +131,7 @@ def test_the_internal_udt_marker_does_not_reach_the_wire(spark):
     # marker must not ride along: `toArrow()` would hide it, but a consumer reading the Arrow
     # stream itself would see Sail's internals.
     udt = UnnamedPythonUDT()
-    schema = (
-        StructType()
-        .add("a", udt)
-        .add("s", StructType().add("u", udt))
-        .add("arr", ArrayType(udt))
-    )
+    schema = StructType().add("a", udt).add("s", StructType().add("u", udt)).add("arr", ArrayType(udt))
     metadata = wire_metadata(spark.createDataFrame(data=[], schema=schema))
     assert metadata, "the probe walked no fields"
     leaked = {path: sorted(k.decode() for k in value if k.startswith(b"SAIL::")) for path, value in metadata.items()}

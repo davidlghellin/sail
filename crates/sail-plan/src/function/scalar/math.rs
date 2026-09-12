@@ -14,7 +14,8 @@ use sail_function::error::generic_exec_err;
 use sail_function::scalar::datetime::negate_duration::NegateDuration;
 use sail_function::scalar::datetime::spark_interval::SparkDayTimeIntervalToCalendarInterval;
 use sail_function::scalar::datetime::spark_interval_scale::{
-    SparkDivideDtInterval, SparkDivideYmInterval, SparkMultiplyDtInterval, SparkMultiplyYmInterval,
+    SparkDivideCalendarInterval, SparkDivideDtInterval, SparkDivideYmInterval,
+    SparkMultiplyCalendarInterval, SparkMultiplyDtInterval, SparkMultiplyYmInterval,
 };
 use sail_function::scalar::datetime::spark_timestamp::SparkTimestamp;
 use sail_function::scalar::math::rand_poisson::RandPoisson;
@@ -333,6 +334,16 @@ fn spark_multiply(input: ScalarFunctionInput) -> PlanResult<Expr> {
         (Ok(_), Ok(DataType::Interval(IntervalUnit::YearMonth))) => {
             ScalarUDF::from(SparkMultiplyYmInterval::new()).call(vec![right, left])
         }
+        // `MultiplyInterval` (`:150-151`), the LEGACY calendar interval, either operand order.
+        // It reads the ANSI flag, unlike the two ANSI-interval pairs.
+        (Ok(DataType::Interval(IntervalUnit::MonthDayNano)), Ok(_)) => ScalarUDF::from(
+            SparkMultiplyCalendarInterval::new(function_context.plan_config.ansi_mode),
+        )
+        .call(vec![left, right]),
+        (Ok(_), Ok(DataType::Interval(IntervalUnit::MonthDayNano))) => ScalarUDF::from(
+            SparkMultiplyCalendarInterval::new(function_context.plan_config.ansi_mode),
+        )
+        .call(vec![right, left]),
         // `MultiplyDTInterval` (`:156-157`). Sail spells a day-time interval as `Duration`, and
         // scaling its micros through DataFusion truncated the product instead of rounding it
         // HALF_UP -- `INTERVAL '0.000001' SECOND * 0.5` came back as zero where Spark answers one
@@ -483,6 +494,19 @@ fn spark_divide(input: ScalarFunctionInput) -> PlanResult<Expr> {
     // rounding HALF_UP, and returns NULL for a zero divisor with ANSI off.
     if let Ok(DataType::Duration(TimeUnit::Microsecond)) = &dividend_type {
         return Ok(ScalarUDF::from(SparkDivideDtInterval::new()).call(vec![dividend, divisor]));
+    }
+    // `DivideInterval` (`:166`). This one DOES read the ANSI flag: with it off a zero divisor
+    // gives NULL, so the divisor goes through `nullif` and the UDF never sees the zero -- which
+    // also keeps the result typed as an interval, where the shared short-circuit below would
+    // return an untyped NULL.
+    if let Ok(DataType::Interval(IntervalUnit::MonthDayNano)) = &dividend_type {
+        let divisor = if ansi_mode {
+            divisor
+        } else {
+            expr_fn::nullif(cast(divisor, DataType::Float64), lit(0.0))
+        };
+        return Ok(ScalarUDF::from(SparkDivideCalendarInterval::new(ansi_mode))
+            .call(vec![dividend, divisor]));
     }
 
     // Plan-time check for literal zero divisors (fast path, better error UX).
