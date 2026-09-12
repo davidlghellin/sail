@@ -77,12 +77,13 @@ def variable_for_delta_log(name: str, location_var: str, variables: dict) -> dic
 def spark_config_override(key, value, spark, variables):
     """Sets a Spark configuration value. Restores the original value or unsets the value after the scenario.
 
-    Whether the key was set is read from `getAll`, which lists only the keys the session set:
-    reading the value back cannot tell "unset" from "set to the default", so restoring it would
-    pin the default explicitly and leak that setting into every later scenario of the session.
+    Whether the key was set is read with an explicit `None` default, which comes back only when
+    the key is not set: a plain `get` cannot tell "unset" from "set to the default", so restoring
+    the value it read would pin that default for every later scenario of the session. `getAll`
+    would say the same, but it only exists in PySpark 4.0+ and the test matrix includes 3.5.9.
     """
     rendered_value = Template(value).render(**variables)
-    old_value = spark.conf.getAll.get(key)
+    old_value = spark.conf.get(key, None)
     spark.conf.set(key, rendered_value)
     yield
     if old_value is None:

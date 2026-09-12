@@ -134,6 +134,20 @@ fn spark_plus(input: ScalarFunctionInput) -> PlanResult<Expr> {
             (Ok(DataType::Duration(TimeUnit::Microsecond)), Ok(DataType::Date32)) => {
                 cast(left, DataType::Interval(IntervalUnit::MonthDayNano)) + right
             }
+            // A Spark day-time interval reaches `+` as Arrow `Duration`, but DataFusion's
+            // `time +- interval` rule matches only `Interval(_)`. Spell it the way that rule
+            // expects, so the `(Time, IntervalDt)` pair `rejects_add` accepts really resolves
+            // (`TimeAddInterval`, `BinaryArithmeticWithDatetimeResolver.scala:87,90`) instead of
+            // dying one layer down. The `TIME - TIME` arm in `spark_minus` produces exactly such
+            // a `Duration`, so without this the two halves contradict each other.
+            // TODO: DataFusion wraps within the 24-hour clock; Spark raises `[DATETIME_OVERFLOW]`
+            // in both ANSI modes. `arithmetic_time_subtraction.feature` pins the gap.
+            (Ok(DataType::Time32(_) | DataType::Time64(_)), Ok(DataType::Duration(_))) => {
+                left + cast(right, DataType::Interval(IntervalUnit::MonthDayNano))
+            }
+            (Ok(DataType::Duration(_)), Ok(DataType::Time32(_) | DataType::Time64(_))) => {
+                cast(left, DataType::Interval(IntervalUnit::MonthDayNano)) + right
+            }
             (Ok(left_type), Ok(DataType::Date32)) if left_type.is_numeric() => {
                 cast(left + cast(right, DataType::Int32), DataType::Date32)
             }
@@ -207,6 +221,12 @@ fn spark_minus(input: ScalarFunctionInput) -> PlanResult<Expr> {
                 Ok(DataType::Time32(_) | DataType::Time64(_)),
                 Ok(DataType::Time32(_) | DataType::Time64(_)),
             ) => cast(left - right, DataType::Duration(TimeUnit::Microsecond)),
+            // The `-` half of the arms above: `TimeAddInterval` with a negated interval
+            // (`BinaryArithmeticWithDatetimeResolver.scala:133-134`). `interval - time` is absent
+            // on purpose: Spark has no such arm and `rejects_subtract` rejects the pair first.
+            (Ok(DataType::Time32(_) | DataType::Time64(_)), Ok(DataType::Duration(_))) => {
+                left - cast(right, DataType::Interval(IntervalUnit::MonthDayNano))
+            }
             (Ok(DataType::Date32), Ok(DataType::Duration(TimeUnit::Microsecond))) => {
                 left - cast(right, DataType::Interval(IntervalUnit::MonthDayNano))
             }
@@ -993,17 +1013,29 @@ fn rejects_unanchored_string_pair(a: OperandRole, b: OperandRole, ansi_mode: boo
 fn is_date_offset_numeric(data_type: &DataType) -> bool {
     // `DateAdd`/`DateSub` take `TypeCollection(IntegerType, ShortType, ByteType)`
     // (`datetimeExpressions.scala:331,371`) and are `ExpectsInputTypes`, not
-    // `ImplicitCastInputTypes`, so nothing widens a BIGINT/FLOAT/DOUBLE/DECIMAL offset into range.
-    // The unsigned widths follow the type SPARK gives them, measured on the same Parquet file:
-    // its reader WIDENS each by one step so every value stays representable -- UINT_8 -> SMALLINT,
-    // UINT_16 -> INT, UINT_32 -> BIGINT, UINT_64 -> DECIMAL(20,0)
-    // (`ParquetSchemaConverter.scala`). So only `UInt8` and `UInt16` land inside `DateAdd`'s
-    // accept set. (Sail's own Arrow->Spark mapping instead reports the same-width signed type,
-    // which is one step narrower than Spark's and lossy above 2^31; that divergence is
-    // pre-existing and lives in `data_type_arrow.rs`, not here.)
+    // `ImplicitCastInputTypes`, so Spark rejects a BIGINT offset. Sail accepts one anyway,
+    // because Sail types several expressions WIDER than Spark does and refusing BIGINT here
+    // would refuse queries Spark answers:
+    //   * `datediff` / `date_diff` -- Spark `IntegerType` (`datetimeExpressions.scala:2522`)
+    //   * `date - date`            -- Spark `DayTimeIntervalType(DAY)` (`:3617`)
+    //   * `regexp_count`           -- Spark `IntegerType`
+    // are all BIGINT in Sail. `date_offset_view` only rescues the syntactic `date - date`; once
+    // the value crosses a projection boundary it is a bare BIGINT column.
+    // `UInt32` follows the same rule: Sail's Arrow->Spark mapping reports it as INT
+    // (`data_type_arrow.rs`), so refusing it would contradict the schema Sail advertises.
+    // `UInt64` stays out: Sail promotes the sum to `Decimal128(21,0)`, which does not cast
+    // back to a date, and Spark rejects it too (its reader widens UINT_64 to DECIMAL(20,0)).
+    // TODO: give `datediff`, `date_diff` and `date - date` Spark's result types, then narrow
+    // this back to `DateAdd`'s accept set (`Int8 | Int16 | Int32 | UInt8 | UInt16`).
     matches!(
         data_type,
-        DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::UInt8 | DataType::UInt16
+        DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::UInt8
+            | DataType::UInt16
+            | DataType::UInt32
     )
 }
 

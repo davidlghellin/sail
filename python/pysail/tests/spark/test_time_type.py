@@ -11,9 +11,13 @@ as it found it: these tests unset the key, which is what tells "unset" from "set
 import contextlib
 
 import pytest
-from pyspark.errors import PySparkException
+from pyspark.errors import AnalysisException
 
-from pysail.testing.spark.utils.common import is_jvm_spark
+from pysail.testing.spark.utils.common import is_jvm_spark, pyspark_version
+
+# The refusal is server-side and any client can read it, but a TIME *value* only decodes from
+# PySpark 4.1: 3.5 has no such type and 4.0 raises `[UNSUPPORTED_OPERATION]` client-side.
+client_decodes_time = pyspark_version() >= (4, 1)
 
 TIME_EXPRESSIONS = [
     pytest.param("TIME'01:02:03'", id="literal"),
@@ -50,11 +54,12 @@ def time_type_enabled(spark, value):
 def test_the_time_type_is_refused_when_the_flag_is_off(spark, expression):
     with (
         time_type_enabled(spark, "false"),
-        pytest.raises(PySparkException, match="(?i)the data type TIME is not supported"),
+        pytest.raises(AnalysisException, match="(?i)the data type TIME is not supported"),
     ):
         spark.sql(f"SELECT {expression} AS result").collect()  # noqa: S608
 
 
+@pytest.mark.skipif(not client_decodes_time, reason="the TIME type needs PySpark 4.1+")
 @pytest.mark.parametrize("expression", RESOLVING_TIME_EXPRESSIONS)
 def test_the_time_type_resolves_when_the_flag_is_on(spark, expression):
     with time_type_enabled(spark, "true"):
@@ -69,5 +74,55 @@ def test_the_time_type_resolves_when_the_flag_is_on(spark, expression):
 def test_the_time_type_is_refused_by_default(spark):
     # The deliberate superset: Sail answers where Spark refuses. Pinned so the day the default
     # changes -- or the day Spark turns the flag on -- this says so.
-    with pytest.raises(PySparkException, match="(?i)the data type TIME is not supported"):
+    with pytest.raises(AnalysisException, match="(?i)the data type TIME is not supported"):
         spark.sql("SELECT TIME'01:02:03' AS result").collect()
+
+
+# A TIME nobody spells: it only shows up in the OUTPUT SCHEMA. Spark refuses these too, in
+# `TimeExpression.checkInputDataTypes` and on `dataframe.schema` in every Connect execution.
+UNSPELLED_TIME_EXPRESSIONS = [
+    pytest.param("to_time('01:02:03')", id="to_time"),
+    pytest.param("try_to_time('01:02:03')", id="try_to_time"),
+    pytest.param("make_time(1, 2, 3)", id="make_time"),
+    pytest.param("""from_json('{"t": "01:02:03"}', 't TIME')""", id="from_json"),
+    pytest.param("""from_json('{"a": {"t": "01:02:03"}}', 'a struct<t: TIME>')""", id="from_json-nested"),
+]
+
+
+@pytest.mark.parametrize("expression", UNSPELLED_TIME_EXPRESSIONS)
+def test_a_time_nobody_spelled_is_refused_when_the_flag_is_off(spark, expression):
+    with (
+        time_type_enabled(spark, "false"),
+        pytest.raises(AnalysisException, match="(?i)the data type TIME is not supported"),
+    ):
+        spark.sql(f"SELECT {expression} AS result").collect()  # noqa: S608
+
+
+def test_a_file_whose_schema_has_a_time_column_is_refused_when_the_flag_is_off(spark, tmp_path):
+    location = str(tmp_path / "time.parquet")
+    with time_type_enabled(spark, "true"):
+        spark.sql("SELECT TIME'01:02:03' AS t").write.mode("overwrite").parquet(location)
+    with (
+        time_type_enabled(spark, "false"),
+        pytest.raises(AnalysisException, match="(?i)the data type TIME is not supported"),
+    ):
+        spark.read.parquet(location).collect()
+
+
+@pytest.mark.xfail(
+    not is_jvm_spark(),
+    strict=True,
+    reason=(
+        "Sail checks the output schema, so a projection that drops the TIME column is not "
+        "refused; Spark refuses the read itself in `DataSourceUtils.verifySchema`"
+    ),
+)
+def test_a_time_column_is_refused_even_when_the_projection_drops_it(spark, tmp_path):
+    location = str(tmp_path / "time.parquet")
+    with time_type_enabled(spark, "true"):
+        spark.sql("SELECT TIME'01:02:03' AS t").write.mode("overwrite").parquet(location)
+    with (
+        time_type_enabled(spark, "false"),
+        pytest.raises(AnalysisException, match="(?i)the data type TIME is not supported"),
+    ):
+        spark.read.parquet(location).selectExpr("1 AS x").collect()

@@ -117,7 +117,6 @@ Feature: arithmetic operand-type REJECTION matrix (+ - * / %) vs Spark 4.2.0
         | int + struct | CAST(2 AS INT) | named_struct('a',1) |
         | bigint + bool | CAST(2 AS BIGINT) | true |
         | bigint + bin | CAST(2 AS BIGINT) | CAST('2' AS BINARY) |
-        | bigint + date | CAST(2 AS BIGINT) | DATE'2024-01-15' |
         | bigint + ts | CAST(2 AS BIGINT) | TIMESTAMP'2024-01-15 12:00:00' |
         | bigint + ts_ntz | CAST(2 AS BIGINT) | TIMESTAMP_NTZ'2024-01-15 12:00:00' |
         | bigint + ival_d | CAST(2 AS BIGINT) | INTERVAL '2' DAY |
@@ -212,7 +211,6 @@ Feature: arithmetic operand-type REJECTION matrix (+ - * / %) vs Spark 4.2.0
         | bin + map | CAST('2' AS BINARY) | map('a',1) |
         | bin + struct | CAST('2' AS BINARY) | named_struct('a',1) |
         | date + bool | DATE'2024-01-15' | true |
-        | date + bigint | DATE'2024-01-15' | CAST(2 AS BIGINT) |
         | date + float | DATE'2024-01-15' | CAST(2 AS FLOAT) |
         | date + double | DATE'2024-01-15' | CAST(2 AS DOUBLE) |
         | date + dec | DATE'2024-01-15' | CAST(2 AS DECIMAL(10,2)) |
@@ -750,7 +748,6 @@ Feature: arithmetic operand-type REJECTION matrix (+ - * / %) vs Spark 4.2.0
         | int + struct | CAST(2 AS INT) | named_struct('a',1) |
         | bigint + bool | CAST(2 AS BIGINT) | true |
         | bigint + bin | CAST(2 AS BIGINT) | CAST('2' AS BINARY) |
-        | bigint + date | CAST(2 AS BIGINT) | DATE'2024-01-15' |
         | bigint + ts | CAST(2 AS BIGINT) | TIMESTAMP'2024-01-15 12:00:00' |
         | bigint + ts_ntz | CAST(2 AS BIGINT) | TIMESTAMP_NTZ'2024-01-15 12:00:00' |
         | bigint + ival_d | CAST(2 AS BIGINT) | INTERVAL '2' DAY |
@@ -847,7 +844,6 @@ Feature: arithmetic operand-type REJECTION matrix (+ - * / %) vs Spark 4.2.0
         | bin + map | CAST('2' AS BINARY) | map('a',1) |
         | bin + struct | CAST('2' AS BINARY) | named_struct('a',1) |
         | date + bool | DATE'2024-01-15' | true |
-        | date + bigint | DATE'2024-01-15' | CAST(2 AS BIGINT) |
         | date + float | DATE'2024-01-15' | CAST(2 AS FLOAT) |
         | date + double | DATE'2024-01-15' | CAST(2 AS DOUBLE) |
         | date + dec | DATE'2024-01-15' | CAST(2 AS DECIMAL(10,2)) |
@@ -1482,7 +1478,6 @@ Feature: arithmetic operand-type REJECTION matrix (+ - * / %) vs Spark 4.2.0
         | bin - map | CAST('2' AS BINARY) | map('a',1) |
         | bin - struct | CAST('2' AS BINARY) | named_struct('a',1) |
         | date - bool | DATE'2024-01-15' | true |
-        | date - bigint | DATE'2024-01-15' | CAST(2 AS BIGINT) |
         | date - float | DATE'2024-01-15' | CAST(2 AS FLOAT) |
         | date - double | DATE'2024-01-15' | CAST(2 AS DOUBLE) |
         | date - dec | DATE'2024-01-15' | CAST(2 AS DECIMAL(10,2)) |
@@ -2136,7 +2131,6 @@ Feature: arithmetic operand-type REJECTION matrix (+ - * / %) vs Spark 4.2.0
         | bin - map | CAST('2' AS BINARY) | map('a',1) |
         | bin - struct | CAST('2' AS BINARY) | named_struct('a',1) |
         | date - bool | DATE'2024-01-15' | true |
-        | date - bigint | DATE'2024-01-15' | CAST(2 AS BIGINT) |
         | date - float | DATE'2024-01-15' | CAST(2 AS FLOAT) |
         | date - double | DATE'2024-01-15' | CAST(2 AS DOUBLE) |
         | date - dec | DATE'2024-01-15' | CAST(2 AS DECIMAL(10,2)) |
@@ -6748,6 +6742,37 @@ Feature: arithmetic operand-type REJECTION matrix (+ - * / %) vs Spark 4.2.0
       Then query error (?i:cannot resolve).*\bINTERVAL\b(?! ?[A-Z(])
 
 
+    # Spark names the field range a year-month interval was declared with
+    # (`YearMonthIntervalType.scala:50-59`): `INTERVAL YEAR`, `INTERVAL MONTH` or
+    # `INTERVAL YEAR TO MONTH`. Sail drops `start_field`/`end_field` when the type becomes Arrow
+    # (`resolver/data_type.rs`), so every one of them is named `INTERVAL YEAR TO MONTH`. The
+    # metadata that would carry the range exists only on the `fix/interval` branch, so this is
+    # pinned rather than fixed here. Day-time intervals cannot diverge in this message: Spark
+    # rewrites `x + <day-time>` through the datetime resolver and never names the interval type.
+    @sail-bug
+    Scenario: a year-only INTERVAL operand keeps its field range in the type name
+      When query
+        """
+        SELECT array(1) + INTERVAL '2' YEAR
+        """
+      Then query error (?i:cannot resolve).*INTERVAL YEAR(?! TO)
+
+    @sail-bug
+    Scenario: a month-only INTERVAL operand keeps its field range in the type name
+      When query
+        """
+        SELECT array(1) + INTERVAL '2' MONTH
+        """
+      Then query error (?i:cannot resolve).*INTERVAL MONTH
+
+    Scenario: a full-range year-month INTERVAL operand is named YEAR TO MONTH
+      When query
+        """
+        SELECT array(1) + INTERVAL '1-2' YEAR TO MONTH
+        """
+      Then query error (?i:cannot resolve).*INTERVAL YEAR TO MONTH
+
+
     # Sail stores GEOMETRY/GEOGRAPHY as Arrow `Binary` and keeps the extension metadata on
     # the `Field`, while `spark_type_name` only receives a `DataType` -- the semantic name is
     # not recoverable at that signature. Spark names the type and its SRID.
@@ -6778,3 +6803,29 @@ Feature: arithmetic operand-type REJECTION matrix (+ - * / %) vs Spark 4.2.0
         SELECT named_struct('a', 1) + 1
         """
       Then query error (?i)cannot resolve.*STRUCT<a: INT NOT NULL>
+
+  Rule: a BIGINT date offset -- Sail accepts it, Spark rejects it
+
+    # `DateAdd`/`DateSub` take `IntegerType | ShortType | ByteType`
+    # (`datetimeExpressions.scala:331,371`), so Spark rejects a BIGINT offset. Sail accepts it on
+    # purpose: it types `datediff`, `date_diff` and `date - date` as BIGINT where Spark types them
+    # INT / INTERVAL DAY, so refusing BIGINT here would refuse
+    # `SELECT DATE'2020-01-01' + datediff(...)` once the value crosses a projection boundary --
+    # a query Spark answers. Drop this Rule once those three carry Spark's result types.
+    @sail-bug
+    Scenario Outline: a BIGINT offset is rejected: <case>
+      Given config spark.sql.ansi.enabled = <ansi>
+      When query
+        """
+        SELECT (<l>) <op> (<r>) AS r
+        """
+      Then query error (?i)cannot resolve
+
+      Examples:
+        | case                   | ansi  | op | l                 | r                 |
+        | date + bigint ansi-off | false | +  | DATE'2024-01-15'  | CAST(2 AS BIGINT) |
+        | bigint + date ansi-off | false | +  | CAST(2 AS BIGINT) | DATE'2024-01-15'  |
+        | date - bigint ansi-off | false | -  | DATE'2024-01-15'  | CAST(2 AS BIGINT) |
+        | date + bigint ansi-on  | true  | +  | DATE'2024-01-15'  | CAST(2 AS BIGINT) |
+        | bigint + date ansi-on  | true  | +  | CAST(2 AS BIGINT) | DATE'2024-01-15'  |
+        | date - bigint ansi-on  | true  | -  | DATE'2024-01-15'  | CAST(2 AS BIGINT) |

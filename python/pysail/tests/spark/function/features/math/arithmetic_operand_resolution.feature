@@ -6,7 +6,7 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
   # narrowing a guard too far turns a row red.
   #
   # It asserts RESOLUTION ONLY and does not pin the result type: that is the coercion
-  # contract, a separate concern with its own branch. Nullability is likewise out of scope.
+  # contract, pinned in `arithmetic_result_type.feature`. Nullability is likewise out of scope.
   #
   # Version note: the verdicts are Spark 4.2.0's, which is what Sail targets. Three cells
   # changed in 4.1 (SPARK-52782, `BinaryArithmeticWithDatetimeResolver.scala:88`) and were
@@ -278,6 +278,12 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | case | l | r |
         | unull + time | NULL | TIME '12:00:00' |
         | time + unull | TIME '12:00:00' | NULL |
+        | time + ival_d | TIME '12:00:00' | INTERVAL '2' DAY |
+        | time + ival_dt | TIME '12:00:00' | INTERVAL '25' HOUR |
+        | time + ival_ds | TIME '12:00:00' | INTERVAL '1 02:03:04' DAY TO SECOND |
+        | ival_d + time | INTERVAL '2' DAY | TIME '12:00:00' |
+        | ival_dt + time | INTERVAL '25' HOUR | TIME '12:00:00' |
+        | ival_ds + time | INTERVAL '1 02:03:04' DAY TO SECOND | TIME '12:00:00' |
 
     @sail-bug
     @spark-4.1
@@ -298,12 +304,6 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | unull + ts_ntz | NULL | TIMESTAMP_NTZ'2024-01-15 12:00:00' |
         | ts + unull | TIMESTAMP'2024-01-15 12:00:00' | NULL |
         | ts_ntz + unull | TIMESTAMP_NTZ'2024-01-15 12:00:00' | NULL |
-        | time + ival_d | TIME '12:00:00' | INTERVAL '2' DAY |
-        | time + ival_dt | TIME '12:00:00' | INTERVAL '25' HOUR |
-        | time + ival_ds | TIME '12:00:00' | INTERVAL '1 02:03:04' DAY TO SECOND |
-        | ival_d + time | INTERVAL '2' DAY | TIME '12:00:00' |
-        | ival_dt + time | INTERVAL '25' HOUR | TIME '12:00:00' |
-        | ival_ds + time | INTERVAL '1 02:03:04' DAY TO SECOND | TIME '12:00:00' |
 
   Rule: `+` operand pairs that resolve (ANSI on)
 
@@ -557,6 +557,12 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | case | l | r |
         | unull + time | NULL | TIME '12:00:00' |
         | time + unull | TIME '12:00:00' | NULL |
+        | time + ival_d | TIME '12:00:00' | INTERVAL '2' DAY |
+        | time + ival_dt | TIME '12:00:00' | INTERVAL '25' HOUR |
+        | time + ival_ds | TIME '12:00:00' | INTERVAL '1 02:03:04' DAY TO SECOND |
+        | ival_d + time | INTERVAL '2' DAY | TIME '12:00:00' |
+        | ival_dt + time | INTERVAL '25' HOUR | TIME '12:00:00' |
+        | ival_ds + time | INTERVAL '1 02:03:04' DAY TO SECOND | TIME '12:00:00' |
 
     @sail-bug
     @spark-4.1
@@ -577,12 +583,6 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | unull + ts_ntz | NULL | TIMESTAMP_NTZ'2024-01-15 12:00:00' |
         | ts + unull | TIMESTAMP'2024-01-15 12:00:00' | NULL |
         | ts_ntz + unull | TIMESTAMP_NTZ'2024-01-15 12:00:00' | NULL |
-        | time + ival_d | TIME '12:00:00' | INTERVAL '2' DAY |
-        | time + ival_dt | TIME '12:00:00' | INTERVAL '25' HOUR |
-        | time + ival_ds | TIME '12:00:00' | INTERVAL '1 02:03:04' DAY TO SECOND |
-        | ival_d + time | INTERVAL '2' DAY | TIME '12:00:00' |
-        | ival_dt + time | INTERVAL '25' HOUR | TIME '12:00:00' |
-        | ival_ds + time | INTERVAL '1 02:03:04' DAY TO SECOND | TIME '12:00:00' |
 
   Rule: `-` operand pairs that resolve (ANSI off)
 
@@ -825,22 +825,6 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | unull - time | NULL | TIME '12:00:00' |
         | time - unull | TIME '12:00:00' | NULL |
         | time - time | TIME '12:00:00' | TIME '12:00:00' |
-
-    @sail-bug
-    @spark-4.1
-    Scenario Outline: minus ansi-off: pair resolves, TIME operand (Sail rejects it): <case>
-      Given config spark.sql.ansi.enabled = false
-      And config spark.sql.timeType.enabled = true
-      When query
-        """
-        SELECT typeof((<l>) - (<r>)) IS NOT NULL AS resolved
-        """
-      Then query result
-        | resolved |
-        | true     |
-
-      Examples:
-        | case | l | r |
         | time - ival_d | TIME '12:00:00' | INTERVAL '2' DAY |
         | time - ival_dt | TIME '12:00:00' | INTERVAL '25' HOUR |
         | time - ival_ds | TIME '12:00:00' | INTERVAL '1 02:03:04' DAY TO SECOND |
@@ -1088,6 +1072,9 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | unull - time | NULL | TIME '12:00:00' |
         | time - unull | TIME '12:00:00' | NULL |
         | time - time | TIME '12:00:00' | TIME '12:00:00' |
+        | time - ival_d | TIME '12:00:00' | INTERVAL '2' DAY |
+        | time - ival_dt | TIME '12:00:00' | INTERVAL '25' HOUR |
+        | time - ival_ds | TIME '12:00:00' | INTERVAL '1 02:03:04' DAY TO SECOND |
 
     @sail-bug
     @spark-4.1
@@ -1106,9 +1093,6 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | case | l | r |
         | str - time | '2' | TIME '12:00:00' |
         | time - str | TIME '12:00:00' | '2' |
-        | time - ival_d | TIME '12:00:00' | INTERVAL '2' DAY |
-        | time - ival_dt | TIME '12:00:00' | INTERVAL '25' HOUR |
-        | time - ival_ds | TIME '12:00:00' | INTERVAL '1 02:03:04' DAY TO SECOND |
 
   Rule: `*` operand pairs that resolve (ANSI off)
 
@@ -2441,7 +2425,10 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | uint8 offset | u8 |
         | uint16 offset | u16 |
 
-    # Spark widens these to BIGINT and DECIMAL(20,0), which `DateAdd` does not accept.
+    # Spark widens UINT_64 to DECIMAL(20,0), which `DateAdd` does not accept; Sail promotes the
+    # sum to a decimal that does not cast back to a date, so it rejects it too. UINT_32 diverges:
+    # Spark widens it to BIGINT and refuses, Sail reads it as INT and accepts -- see the
+    # `@sail-bug` scenario below.
     Scenario Outline: date plus a wider unsigned Parquet column is rejected: <case>
       Given variable location for temporary directory unsigned_offset_reject
       Given final statement
@@ -2463,8 +2450,29 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
 
       Examples:
         | case | col |
-        | uint32 offset | u32 |
         | uint64 offset | u64 |
+
+    # Spark's reader widens UINT_32 to BIGINT, which `DateAdd` refuses; Sail reads it as INT and
+    # accepts the offset -- the same superset as a BIGINT offset.
+    @sail-bug
+    Scenario: date plus a uint32 Parquet column is rejected
+      Given variable location for temporary directory unsigned_offset_u32
+      Given final statement
+        """
+        DROP TABLE IF EXISTS unsigned_u32
+        """
+      Given statement template
+        """
+        CREATE TABLE unsigned_u32
+        USING PARQUET
+        LOCATION {{ location.sql }}
+        AS SELECT CAST(2 AS UINT32) AS u32
+        """
+      When query
+        """
+        SELECT DATE'2024-01-15' + u32 AS r FROM unsigned_u32
+        """
+      Then query error (?i)cannot resolve
 
   Rule: a date shifted by a difference of two dates resolves
 
