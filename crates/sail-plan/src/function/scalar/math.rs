@@ -13,10 +13,10 @@ use sail_common_datafusion::utils::items::ItemTaker;
 use sail_function::error::generic_exec_err;
 use sail_function::scalar::datetime::negate_duration::NegateDuration;
 use sail_function::scalar::datetime::spark_interval::SparkDayTimeIntervalToCalendarInterval;
-use sail_function::scalar::datetime::spark_timestamp::SparkTimestamp;
-use sail_function::scalar::datetime::spark_ym_interval_scale::{
-    SparkDivideYmInterval, SparkMultiplyYmInterval,
+use sail_function::scalar::datetime::spark_interval_scale::{
+    SparkDivideDtInterval, SparkDivideYmInterval, SparkMultiplyDtInterval, SparkMultiplyYmInterval,
 };
+use sail_function::scalar::datetime::spark_timestamp::SparkTimestamp;
 use sail_function::scalar::math::rand_poisson::RandPoisson;
 use sail_function::scalar::math::randn::Randn;
 use sail_function::scalar::math::random::Random;
@@ -333,21 +333,15 @@ fn spark_multiply(input: ScalarFunctionInput) -> PlanResult<Expr> {
         (Ok(_), Ok(DataType::Interval(IntervalUnit::YearMonth))) => {
             ScalarUDF::from(SparkMultiplyYmInterval::new()).call(vec![right, left])
         }
-        // Arrow casts `Interval(YearMonth)` and `Interval(DayTime)` to `Int64` but not
-        // `Interval(MonthDayNano)`, whose native type is `i128` (`arrow-cast/src/cast/mod.rs:331`).
+        // `MultiplyDTInterval` (`:156-157`). Sail spells a day-time interval as `Duration`, and
+        // scaling its micros through DataFusion truncated the product instead of rounding it
+        // HALF_UP -- `INTERVAL '0.000001' SECOND * 0.5` came back as zero where Spark answers one
+        // microsecond -- so it goes through the same UDF as the year-month one.
         (Ok(DataType::Duration(TimeUnit::Microsecond)), Ok(_)) => {
-            // Match duration because we cast Spark's DayTime interval to Duration.
-            cast(
-                cast(left, DataType::Int64) * right,
-                DataType::Duration(TimeUnit::Microsecond),
-            )
+            ScalarUDF::from(SparkMultiplyDtInterval::new()).call(vec![left, right])
         }
         (Ok(_), Ok(DataType::Duration(TimeUnit::Microsecond))) => {
-            // Match duration because we cast Spark's DayTime interval to Duration.
-            cast(
-                left * cast(right, DataType::Int64),
-                DataType::Duration(TimeUnit::Microsecond),
-            )
+            ScalarUDF::from(SparkMultiplyDtInterval::new()).call(vec![right, left])
         }
         // TODO: In case getting the type fails, we don't want to fail the query.
         //  Future work is needed here, ideally we create something like `Operator::SparkMultiply`.
@@ -483,6 +477,12 @@ fn spark_divide(input: ScalarFunctionInput) -> PlanResult<Expr> {
     // in BOTH modes, where a numeric `/` returns NULL with ANSI off.
     if let Ok(DataType::Interval(IntervalUnit::YearMonth)) = &dividend_type {
         return Ok(ScalarUDF::from(SparkDivideYmInterval::new()).call(vec![dividend, divisor]));
+    }
+    // `DivideDTInterval` (`:169`), same story: the generic path below reached DataFusion as
+    // `Duration / <number>`, which refuses a DECIMAL divisor outright, truncates instead of
+    // rounding HALF_UP, and returns NULL for a zero divisor with ANSI off.
+    if let Ok(DataType::Duration(TimeUnit::Microsecond)) = &dividend_type {
+        return Ok(ScalarUDF::from(SparkDivideDtInterval::new()).call(vec![dividend, divisor]));
     }
 
     // Plan-time check for literal zero divisors (fast path, better error UX).

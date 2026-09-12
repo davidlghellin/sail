@@ -166,6 +166,9 @@ use sail_function::scalar::datetime::spark_interval::{
     SparkCalendarInterval, SparkDayTimeInterval, SparkDayTimeIntervalToCalendarInterval,
     SparkYearMonthInterval,
 };
+use sail_function::scalar::datetime::spark_interval_scale::{
+    SparkDivideDtInterval, SparkDivideYmInterval, SparkMultiplyDtInterval, SparkMultiplyYmInterval,
+};
 use sail_function::scalar::datetime::spark_last_day::SparkLastDay;
 use sail_function::scalar::datetime::spark_make_time::SparkMakeTime;
 use sail_function::scalar::datetime::spark_make_timestamp_ntz::SparkMakeTimestampNtz;
@@ -179,9 +182,6 @@ use sail_function::scalar::datetime::spark_try_to_timestamp::SparkTryToTimestamp
 use sail_function::scalar::datetime::spark_unix_timestamp::SparkUnixTimestamp;
 use sail_function::scalar::datetime::spark_window_buckets::SparkWindowBuckets;
 use sail_function::scalar::datetime::spark_year::SparkYear;
-use sail_function::scalar::datetime::spark_ym_interval_scale::{
-    SparkDivideYmInterval, SparkMultiplyYmInterval,
-};
 use sail_function::scalar::datetime::timestamp_now::TimestampNow;
 use sail_function::scalar::drop_struct_field::DropStructField;
 use sail_function::scalar::explode::{Explode, explode_name_to_kind};
@@ -3316,6 +3316,12 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
             "spark_divide_ym_interval" => {
                 Ok(Arc::new(ScalarUDF::from(SparkDivideYmInterval::new())))
             }
+            "spark_multiply_dt_interval" => {
+                Ok(Arc::new(ScalarUDF::from(SparkMultiplyDtInterval::new())))
+            }
+            "spark_divide_dt_interval" => {
+                Ok(Arc::new(ScalarUDF::from(SparkDivideDtInterval::new())))
+            }
             "spark_make_dt_interval" | "make_dt_interval" => {
                 Ok(Arc::new(ScalarUDF::from(SparkMakeDtInterval::new())))
             }
@@ -3425,6 +3431,8 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
             || node_inner.is::<NegateDuration>()
             || node_inner.is::<SparkMultiplyYmInterval>()
             || node_inner.is::<SparkDivideYmInterval>()
+            || node_inner.is::<SparkMultiplyDtInterval>()
+            || node_inner.is::<SparkDivideDtInterval>()
             || node_inner.is::<OverlayFunc>()
             || node_inner.is::<ParseUrl>()
             || node_inner.is::<RaiseError>()

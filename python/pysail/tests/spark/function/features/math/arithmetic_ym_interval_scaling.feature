@@ -131,3 +131,50 @@ Feature: scaling a year-month interval by a number, vs Spark 4.2.0
         | out of range on        | true  | INTERVAL '1' MONTH * CAST(1e18 AS DOUBLE)       | (?i)out of range     |
         | a NaN factor           | false | INTERVAL '1' MONTH * CAST('NaN' AS DOUBLE)      | (?i)infinite or NaN  |
         | a NaN factor on        | true  | INTERVAL '1' MONTH * CAST('NaN' AS DOUBLE)      | (?i)infinite or NaN  |
+
+  Rule: a day-time interval scales by the same rule as a year-month one
+
+    # `MultiplyDTInterval`/`DivideDTInterval` (`BinaryArithmeticWithDatetimeResolver.scala:156-157,
+    # 169`) scale the MICROS and round HALF_UP, exactly as the year-month pair scales the months.
+    # Sail spelled this one as an Arrow `Duration` and let DataFusion do it, which was wrong three
+    # different ways: a DECIMAL divisor was refused outright, the product was TRUNCATED instead of
+    # rounded, and a zero divisor gave NULL with ANSI off where Spark raises. The first was a
+    # rejection; the other two answered, wrongly.
+    Scenario Outline: scaling a day-time interval: <case>
+      Given config spark.sql.ansi.enabled = <ansi>
+      When query
+        """
+        SELECT CAST(<expression> AS STRING) AS v
+        """
+      Then query result
+        | v       |
+        | <value> |
+
+      Examples:
+        | case                | ansi  | expression                                                        | value                                    |
+        | day over decimal    | false | INTERVAL '1' DAY / CAST(1.5 AS DECIMAL(10,2))                     | INTERVAL '0 16:00:00' DAY TO SECOND      |
+        | day over decimal on | true  | INTERVAL '1' DAY / CAST(1.5 AS DECIMAL(10,2))                     | INTERVAL '0 16:00:00' DAY TO SECOND      |
+        | dts over decimal    | false | INTERVAL '1 02:03:04' DAY TO SECOND / CAST(1.5 AS DECIMAL(10,2))  | INTERVAL '0 17:22:02.666667' DAY TO SECOND |
+        | hts over decimal    | false | INTERVAL '02:03:04' HOUR TO SECOND / CAST(1.5 AS DECIMAL(10,2))   | INTERVAL '0 01:22:02.666667' DAY TO SECOND |
+        | day over decimal 38 | false | INTERVAL '1' DAY / CAST(3 AS DECIMAL(38,0))                       | INTERVAL '0 08:00:00' DAY TO SECOND      |
+        | day times decimal   | false | INTERVAL '1' DAY * CAST(1.5 AS DECIMAL(10,2))                     | INTERVAL '1 12:00:00' DAY TO SECOND      |
+        | decimal times day   | false | CAST(1.5 AS DECIMAL(10,2)) * INTERVAL '1' DAY                     | INTERVAL '1 12:00:00' DAY TO SECOND      |
+        | a micro halved up   | false | INTERVAL '0.000001' SECOND / CAST(2 AS DECIMAL(10,2))             | INTERVAL '0 00:00:00.000001' DAY TO SECOND |
+        | half a micro is one | false | INTERVAL '0.000001' SECOND * CAST(0.5 AS DECIMAL(10,2))           | INTERVAL '0 00:00:00.000001' DAY TO SECOND |
+        | a third of a micro  | false | INTERVAL '0.000001' SECOND / CAST(3 AS INT)                       | INTERVAL '0 00:00:00' DAY TO SECOND      |
+        | two fifths of one   | false | INTERVAL '0.000001' SECOND * CAST(0.4 AS DOUBLE)                  | INTERVAL '0 00:00:00' DAY TO SECOND      |
+
+    # The one that answered instead of raising: an interval divided by zero is an error in BOTH
+    # ANSI modes, where a numeric `/` returns NULL with ANSI off.
+    Scenario Outline: a day-time interval divided by zero raises with ANSI <ansi>
+      Given config spark.sql.ansi.enabled = <ansi>
+      When query
+        """
+        SELECT INTERVAL '1' DAY / CAST(0 AS DECIMAL(10,2)) AS v
+        """
+      Then query error (?i)division by zero
+
+      Examples:
+        | ansi  |
+        | false |
+        | true  |

@@ -1301,6 +1301,12 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | ival_ym * float | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS FLOAT) |
         | ival_ym * double | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS DOUBLE) |
         | ival_ym * dec | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS DECIMAL(10,2)) |
+        | str * ival_m | '2' | INTERVAL '2' MONTH |
+        | str * ival_y | '2' | INTERVAL '2' YEAR |
+        | str * ival_ym | '2' | INTERVAL '1-2' YEAR TO MONTH |
+        | ival_m * str | INTERVAL '2' MONTH | '2' |
+        | ival_y * str | INTERVAL '2' YEAR | '2' |
+        | ival_ym * str | INTERVAL '1-2' YEAR TO MONTH | '2' |
 
     @sail-bug
     Scenario Outline: times ansi-off: pair resolves (Sail rejects it): <case>
@@ -1344,13 +1350,7 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | str * double | '2' | CAST(2 AS DOUBLE) |
         | str * dec | '2' | CAST(2 AS DECIMAL(10,2)) |
         | str * str | '2' | '2' |
-        | str * ival_m | '2' | INTERVAL '2' MONTH |
-        | str * ival_y | '2' | INTERVAL '2' YEAR |
-        | str * ival_ym | '2' | INTERVAL '1-2' YEAR TO MONTH |
         | str * calendar | '2' | make_interval(0,1,0,1,0,0,0) |
-        | ival_m * str | INTERVAL '2' MONTH | '2' |
-        | ival_y * str | INTERVAL '2' YEAR | '2' |
-        | ival_ym * str | INTERVAL '1-2' YEAR TO MONTH | '2' |
         | calendar * unull | make_interval(0,1,0,1,0,0,0) | NULL |
         | calendar * null | make_interval(0,1,0,1,0,0,0) | CAST(NULL AS INT) |
         | calendar * tinyint | make_interval(0,1,0,1,0,0,0) | CAST(2 AS TINYINT) |
@@ -1587,6 +1587,12 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | ival_ym * float | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS FLOAT) |
         | ival_ym * double | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS DOUBLE) |
         | ival_ym * dec | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS DECIMAL(10,2)) |
+        | str * ival_m | '2' | INTERVAL '2' MONTH |
+        | str * ival_y | '2' | INTERVAL '2' YEAR |
+        | str * ival_ym | '2' | INTERVAL '1-2' YEAR TO MONTH |
+        | ival_m * str | INTERVAL '2' MONTH | '2' |
+        | ival_y * str | INTERVAL '2' YEAR | '2' |
+        | ival_ym * str | INTERVAL '1-2' YEAR TO MONTH | '2' |
 
     @sail-bug
     Scenario Outline: times ansi-on: pair resolves (Sail rejects it): <case>
@@ -1627,13 +1633,7 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | str * float | '2' | CAST(2 AS FLOAT) |
         | str * double | '2' | CAST(2 AS DOUBLE) |
         | str * dec | '2' | CAST(2 AS DECIMAL(10,2)) |
-        | str * ival_m | '2' | INTERVAL '2' MONTH |
-        | str * ival_y | '2' | INTERVAL '2' YEAR |
-        | str * ival_ym | '2' | INTERVAL '1-2' YEAR TO MONTH |
         | str * calendar | '2' | make_interval(0,1,0,1,0,0,0) |
-        | ival_m * str | INTERVAL '2' MONTH | '2' |
-        | ival_y * str | INTERVAL '2' YEAR | '2' |
-        | ival_ym * str | INTERVAL '1-2' YEAR TO MONTH | '2' |
         | calendar * unull | make_interval(0,1,0,1,0,0,0) | NULL |
         | calendar * null | make_interval(0,1,0,1,0,0,0) | CAST(NULL AS INT) |
         | calendar * tinyint | make_interval(0,1,0,1,0,0,0) | CAST(2 AS TINYINT) |
@@ -1837,6 +1837,12 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | ival_ym / float | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS FLOAT) |
         | ival_ym / double | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS DOUBLE) |
         | ival_ym / dec | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS DECIMAL(10,2)) |
+        | ival_d / dec | INTERVAL '2' DAY | CAST(2 AS DECIMAL(10,2)) |
+        | ival_dt / dec | INTERVAL '25' HOUR | CAST(2 AS DECIMAL(10,2)) |
+        | ival_ds / dec | INTERVAL '1 02:03:04' DAY TO SECOND | CAST(2 AS DECIMAL(10,2)) |
+        | ival_m / str | INTERVAL '2' MONTH | '2' |
+        | ival_y / str | INTERVAL '2' YEAR | '2' |
+        | ival_ym / str | INTERVAL '1-2' YEAR TO MONTH | '2' |
 
     @sail-bug
     Scenario Outline: divide ansi-off: pair resolves (Sail rejects it): <case>
@@ -1853,12 +1859,6 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
       Examples:
         | case | l | r |
         | str / dec | '2' | CAST(2 AS DECIMAL(10,2)) |
-        | ival_d / dec | INTERVAL '2' DAY | CAST(2 AS DECIMAL(10,2)) |
-        | ival_dt / dec | INTERVAL '25' HOUR | CAST(2 AS DECIMAL(10,2)) |
-        | ival_ds / dec | INTERVAL '1 02:03:04' DAY TO SECOND | CAST(2 AS DECIMAL(10,2)) |
-        | ival_m / str | INTERVAL '2' MONTH | '2' |
-        | ival_y / str | INTERVAL '2' YEAR | '2' |
-        | ival_ym / str | INTERVAL '1-2' YEAR TO MONTH | '2' |
         | calendar / dec | make_interval(0,1,0,1,0,0,0) | CAST(2 AS DECIMAL(10,2)) |
 
     @spark-4
@@ -2049,6 +2049,12 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | ival_ym / float | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS FLOAT) |
         | ival_ym / double | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS DOUBLE) |
         | ival_ym / dec | INTERVAL '1-2' YEAR TO MONTH | CAST(2 AS DECIMAL(10,2)) |
+        | ival_d / dec | INTERVAL '2' DAY | CAST(2 AS DECIMAL(10,2)) |
+        | ival_dt / dec | INTERVAL '25' HOUR | CAST(2 AS DECIMAL(10,2)) |
+        | ival_ds / dec | INTERVAL '1 02:03:04' DAY TO SECOND | CAST(2 AS DECIMAL(10,2)) |
+        | ival_m / str | INTERVAL '2' MONTH | '2' |
+        | ival_y / str | INTERVAL '2' YEAR | '2' |
+        | ival_ym / str | INTERVAL '1-2' YEAR TO MONTH | '2' |
 
     @sail-bug
     Scenario Outline: divide ansi-on: pair resolves (Sail rejects it): <case>
@@ -2066,12 +2072,6 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | case | l | r |
         | dec / str | CAST(2 AS DECIMAL(10,2)) | '2' |
         | str / dec | '2' | CAST(2 AS DECIMAL(10,2)) |
-        | ival_d / dec | INTERVAL '2' DAY | CAST(2 AS DECIMAL(10,2)) |
-        | ival_dt / dec | INTERVAL '25' HOUR | CAST(2 AS DECIMAL(10,2)) |
-        | ival_ds / dec | INTERVAL '1 02:03:04' DAY TO SECOND | CAST(2 AS DECIMAL(10,2)) |
-        | ival_m / str | INTERVAL '2' MONTH | '2' |
-        | ival_y / str | INTERVAL '2' YEAR | '2' |
-        | ival_ym / str | INTERVAL '1-2' YEAR TO MONTH | '2' |
         | calendar / dec | make_interval(0,1,0,1,0,0,0) | CAST(2 AS DECIMAL(10,2)) |
 
     @spark-4
