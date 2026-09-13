@@ -6804,15 +6804,13 @@ Feature: arithmetic operand-type REJECTION matrix (+ - * / %) vs Spark 4.2.0
         """
       Then query error (?i)cannot resolve.*STRUCT<a: INT NOT NULL>
 
-  Rule: a BIGINT date offset -- Sail accepts it, Spark rejects it
+  Rule: a BIGINT date offset is rejected
 
     # `DateAdd`/`DateSub` take `IntegerType | ShortType | ByteType`
-    # (`datetimeExpressions.scala:331,371`), so Spark rejects a BIGINT offset. Sail accepts it on
-    # purpose: it still types `regexp_count` and `regexp_instr` as BIGINT where Spark types them
-    # INT, so refusing BIGINT here would refuse `SELECT DATE'2020-01-01' + regexp_count(...)`
-    # once the value crosses a projection boundary -- a query Spark answers. Drop this Rule once
-    # every function that can produce an offset carries Spark's result type.
-    @sail-bug
+    # (`datetimeExpressions.scala:331,371`), so a BIGINT offset is refused. Sail used to accept one
+    # on purpose, because it typed `datediff`, `regexp_count` and `regexp_instr` as BIGINT and a
+    # narrow guard would have refused `DATE + regexp_count(...)`, which Spark answers. They carry
+    # Spark's INT now, and `arithmetic_derived_operand.feature` keeps that query green.
     Scenario Outline: a BIGINT offset is rejected: <case>
       Given config spark.sql.ansi.enabled = <ansi>
       When query

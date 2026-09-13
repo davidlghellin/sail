@@ -64,11 +64,9 @@ Feature: unary + and - operand types vs Spark 4.2.0
 
   Rule: unary - rejects everything else
 
-    # Sail already REJECTS all eleven, so the accept/reject verdict matches Spark exactly -- what
-    # diverges is the message: DataFusion's `Failed to coerce arguments to satisfy a call to
-    # 'negative' function: ...`, which carries an Arrow `Debug` dump. That is the same leak the
-    # binary operators no longer have, so these are tagged for the wording, not for the verdict.
-    @sail-bug
+    # Sail always refused these eleven; the message used to be DataFusion's `Failed to coerce
+    # arguments to satisfy a call to 'negative' function`, with an Arrow `Debug` dump in it. The
+    # operand is now judged before `negative` is reached, with the same guard as the unary `+`.
     Scenario Outline: unary minus rejects a <case> operand
       When query
         """
@@ -92,11 +90,9 @@ Feature: unary + and - operand types vs Spark 4.2.0
 
   Rule: unary + rejects everything else
 
-    # The 22 divergent cells of the matrix, in one place: Sail's arity-1 `+` is a bare identity,
-    # so every one of these comes back with the operand unchanged instead of failing analysis.
-    # The fix is the same guard the binary operators already have -- `operand_role` plus
-    # `arithmetic_operand_error` -- applied to the single operand.
-    @sail-bug
+    # The arity-1 `+` used to be a bare identity, so each of these came back with the operand
+    # unchanged -- a DATE, a BOOLEAN, an ARRAY answered where Spark fails analysis. It takes
+    # `NumericAndInterval` (`arithmetic.scala:124`) like the unary `-`, and shares its guard.
     Scenario Outline: unary plus rejects a <case> operand
       When query
         """

@@ -108,7 +108,10 @@ fn type_of(input: ScalarFunctionInput) -> PlanResult<expr::Expr> {
 
 fn bitmap_bit_position(input: ScalarFunctionInput) -> PlanResult<expr::Expr> {
     let ScalarFunctionInput { arguments, .. } = input;
-    let value = arguments.one()?;
+    // `inputTypes = Seq(LongType)` and `dataType = LongType` (`bitmapExpressions.scala`). As an INT
+    // it was a different arithmetic operand than Spark's: `DATE + bitmap_bit_position(1)` resolved here
+    // and is refused there, since `DateAdd` takes no BIGINT.
+    let value = cast(arguments.one()?, DataType::Int64);
     let num_bits = 8 * 4 * 1024;
     Ok(when(
         value.clone().gt(lit(0)),
@@ -120,7 +123,10 @@ fn bitmap_bit_position(input: ScalarFunctionInput) -> PlanResult<expr::Expr> {
 
 fn bitmap_bucket_number(input: ScalarFunctionInput) -> PlanResult<expr::Expr> {
     let ScalarFunctionInput { arguments, .. } = input;
-    let value = arguments.one()?;
+    // `inputTypes = Seq(LongType)` and `dataType = LongType` (`bitmapExpressions.scala`). As an INT
+    // it was a different arithmetic operand than Spark's: `DATE + bitmap_bucket_number(1)` resolved here
+    // and is refused there, since `DateAdd` takes no BIGINT.
+    let value = cast(arguments.one()?, DataType::Int64);
     let num_bits = 8 * 4 * 1024;
     Ok(when(
         value.clone().gt(lit(0)),

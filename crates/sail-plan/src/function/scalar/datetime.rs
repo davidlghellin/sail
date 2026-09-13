@@ -266,10 +266,13 @@ fn dateadd(input: ScalarFunctionInput, function_name: &str) -> PlanResult<Expr> 
 
 fn make_date(year: Expr, month: Expr, day: Expr) -> Expr {
     match (&year, &month, &day) {
+        // `MakeDate.dataType` is `DateType` whatever its arguments are, so a NULL argument yields a
+        // NULL DATE, not an untyped NULL. The untyped one slipped past every date guard:
+        // `2 * make_date(2019, 7, NULL)` answered NULL where Spark refuses a DATE operand.
         (Expr::Literal(ScalarValue::Null, metadata), _, _)
         | (_, Expr::Literal(ScalarValue::Null, metadata), _)
         | (_, _, Expr::Literal(ScalarValue::Null, metadata)) => {
-            Expr::Literal(ScalarValue::Null, metadata.clone())
+            Expr::Literal(ScalarValue::Date32(None), metadata.clone())
         }
         _ => expr_fn::make_date(year, month, day),
     }

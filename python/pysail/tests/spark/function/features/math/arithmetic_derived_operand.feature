@@ -14,9 +14,10 @@ Feature: arithmetic operands whose type is derived, vs Spark 4.2.0
 
   Rule: a date offset that comes out of a function resolves
 
-    # The regression this file exists for. Spark types `regexp_count` as INT and Sail as BIGINT,
-    # so a guard narrowed to Spark's accept set refuses a query Spark answers once the value
-    # crosses a projection boundary. Green on both engines; it locks the accept set open.
+    # The regression this file exists for. The date offset guard is `DateAdd`'s own INT accept set,
+    # so a function typed BIGINT where Spark types it INT would make Sail refuse a query Spark
+    # answers once the value crosses a projection boundary. Green on both engines; it is the guard
+    # against `regexp_count` or `datediff` drifting back to BIGINT.
     Scenario Outline: a date shifted by <case> resolves
       When query
         """
@@ -67,10 +68,9 @@ Feature: arithmetic operands whose type is derived, vs Spark 4.2.0
 
   Rule: make_date with a NULL argument is still a DATE
 
-    # Spark keeps the DATE type and refuses the multiplication; Sail types it VOID, so the guard
-    # never sees a date and the query ANSWERS `NULL`. The only row in this file where Sail returns
-    # a value for a query Spark rejects outright.
-    @sail-bug
+    # `MakeDate.dataType` is `DateType` even when an argument is NULL, so Spark refuses the
+    # multiplication. Sail used to type the result VOID, so the guard never saw a date and the
+    # query answered `NULL`.
     Scenario: a date built with a NULL argument is refused as an arithmetic operand
       When query
         """
@@ -80,10 +80,9 @@ Feature: arithmetic operands whose type is derived, vs Spark 4.2.0
 
   Rule: the result type of a function decides the cell it lands in
 
-    # The root of every row above, asserted directly, and it runs both ways: Spark types
-    # `regexp_instr` INT and Sail BIGINT, while `bitmap_bit_position` is BIGINT in Spark -- which
-    # `DateAdd` refuses -- and INT in Sail, which accepts the offset.
-    @sail-bug
+    # The root of every row above, asserted directly, in both directions: a type too wide refuses
+    # an offset Spark takes (`regexp_instr`), a type too narrow takes one Spark refuses
+    # (`bitmap_bit_position`, a BIGINT in Spark).
     Scenario Outline: <case>
       When query
         """
@@ -98,7 +97,6 @@ Feature: arithmetic operands whose type is derived, vs Spark 4.2.0
         | regexp_instr returns an INT     | regexp_instr('abc', 'b') | int    |
         | bitmap_bit_position is a BIGINT | bitmap_bit_position(1)   | bigint |
 
-    @sail-bug
     Scenario: a date shifted by a BIGINT-typed function is refused
       When query
         """

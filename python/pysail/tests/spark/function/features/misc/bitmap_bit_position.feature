@@ -27,7 +27,6 @@ Feature: bitmap_bit_position output schema
          |-- result: long (nullable = false)
         """
 
-    @sail-bug
     Scenario: a nullable column input to bitmap_bit_position stays nullable
       When query
         """

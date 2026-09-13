@@ -2284,9 +2284,8 @@ Feature: arithmetic operand pairs Spark resolves (+ - * / %) vs Spark 4.2.0
         | case | col |
         | uint64 offset | u64 |
 
-    # Spark's reader widens UINT_32 to BIGINT, which `DateAdd` refuses; Sail reads it as INT and
-    # accepts the offset -- the same superset as a BIGINT offset.
-    @sail-bug
+    # Spark's reader widens UINT_32 to BIGINT, which `DateAdd` refuses. Sail refuses it too now
+    # that its date offset guard is `DateAdd`'s own accept set.
     Scenario: date plus a uint32 Parquet column is rejected
       Given variable location for temporary directory unsigned_offset_u32
       Given final statement

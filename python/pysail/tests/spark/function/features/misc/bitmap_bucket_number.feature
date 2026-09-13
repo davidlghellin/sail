@@ -27,7 +27,6 @@ Feature: bitmap_bucket_number output schema
          |-- result: long (nullable = false)
         """
 
-    @sail-bug
     Scenario: a nullable column input to bitmap_bucket_number stays nullable
       When query
         """

@@ -109,7 +109,24 @@ fn spark_plus(input: ScalarFunctionInput) -> PlanResult<Expr> {
         function_context,
     } = input;
     if arguments.len() < 2 {
-        Ok(arguments.one()?)
+        // The arity-1 `+` used to hand its operand back untouched, so it answered every type Spark
+        // refuses -- a DATE, a BOOLEAN, an ARRAY -- and kept a STRING as a string where Spark gives
+        // a DOUBLE.
+        let arg = arguments.one()?;
+        if let Some(error) = rejects_unary_operand("+", &arg, function_context.schema) {
+            return Err(error);
+        }
+        Ok(match arg.get_type(function_context.schema) {
+            Ok(DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View) => {
+                if function_context.plan_config.ansi_mode {
+                    cast(arg, DataType::Float64)
+                } else {
+                    try_cast(arg, DataType::Float64)
+                }
+            }
+            Ok(DataType::Null) => cast(arg, DataType::Float64),
+            _ => arg,
+        })
     } else {
         let (left, right) = arguments.two()?;
         if let Some(error) = rejects_udt_operand("+", &left, &right, function_context.schema) {
@@ -250,6 +267,11 @@ fn spark_minus(input: ScalarFunctionInput) -> PlanResult<Expr> {
     } = input;
     if arguments.len() < 2 {
         let arg = arguments.one()?;
+        // Same accept set as the unary `+`. DataFusion's `negative` already refused these, but with
+        // its own `Failed to coerce arguments` message and an Arrow `Debug` dump in it.
+        if let Some(error) = rejects_unary_operand("-", &arg, function_context.schema) {
+            return Err(error);
+        }
         Ok(spark_unary_negate(
             arg,
             function_context.plan_config.ansi_mode,
@@ -1198,27 +1220,15 @@ fn rejects_unanchored_string_pair(a: OperandRole, b: OperandRole, ansi_mode: boo
 fn is_date_offset_numeric(data_type: &DataType) -> bool {
     // `DateAdd`/`DateSub` take `TypeCollection(IntegerType, ShortType, ByteType)`
     // (`datetimeExpressions.scala:331,371`) and are `ExpectsInputTypes`, not
-    // `ImplicitCastInputTypes`, so Spark rejects a BIGINT offset. Sail accepts one anyway,
-    // because Sail types several expressions WIDER than Spark does and refusing BIGINT here
-    // would refuse queries Spark answers:
-    //   * `regexp_count` / `regexp_instr` -- Spark `IntegerType`, BIGINT in Sail
-    // `datediff`, `date_diff` and `date - date` were in this list too and now carry Spark's own
-    // types, so once the last BIGINT-typed offset is gone this rule can go with it.
-    // `UInt32` follows the same rule: Sail's Arrow->Spark mapping reports it as INT
-    // (`data_type_arrow.rs`), so refusing it would contradict the schema Sail advertises.
-    // `UInt64` stays out: Sail promotes the sum to `Decimal128(21,0)`, which does not cast
-    // back to a date, and Spark rejects it too (its reader widens UINT_64 to DECIMAL(20,0)).
-    // TODO: give `datediff`, `date_diff` and `date - date` Spark's result types, then narrow
-    // this back to `DateAdd`'s accept set (`Int8 | Int16 | Int32 | UInt8 | UInt16`).
+    // `ImplicitCastInputTypes`, so a BIGINT offset is refused -- and so is `UInt32`, which Spark's
+    // Parquet reader widens to BIGINT. This used to accept both, because several functions were
+    // typed BIGINT here where Spark types them INT (`datediff`, `date_diff`, `date - date`,
+    // `regexp_count`, `regexp_instr`), and narrowing would have refused `DATE + regexp_count(...)`,
+    // which Spark answers. They all carry Spark's type now, so this is `DateAdd`'s own accept set;
+    // `arithmetic_derived_operand.feature` is the guard against one of them drifting back.
     matches!(
         data_type,
-        DataType::Int8
-            | DataType::Int16
-            | DataType::Int32
-            | DataType::Int64
-            | DataType::UInt8
-            | DataType::UInt16
-            | DataType::UInt32
+        DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::UInt8 | DataType::UInt16
     )
 }
 
@@ -1701,6 +1711,31 @@ fn collection_element_udt_field(collection: &Expr, schema: &DFSchemaRef) -> Opti
 /// `BINARY_OP_WRONG_TYPE` or `UNEXPECTED_INPUT_TYPE` -- always with SQLSTATE `42K09`, plus the
 /// rewritten expression text and query context. Emit them once Sail has structured analysis
 /// errors; `arithmetic_error_metadata.feature` pins the gap.
+/// Spark's unary `+` and `-` take `NumericAndInterval` (`arithmetic.scala:54,124`), so a DATE,
+/// TIMESTAMP, TIME, BOOLEAN, BINARY, container or UDT is refused at analysis. A STRING is not: string
+/// promotion casts it to DOUBLE first (`AnsiStringPromotionTypeCoercion`:
+/// `UnaryPositive(Cast(e, DoubleType))`), and an untyped NULL becomes a DOUBLE too.
+fn rejects_unary_operand(op: &str, arg: &Expr, schema: &DFSchemaRef) -> Option<PlanError> {
+    use OperandRole::*;
+    let field = arg.to_field(schema).ok().map(|(_, field)| field);
+    let refused = field.as_ref().is_some_and(|field| {
+        is_spark_udt_field(field)
+            || matches!(
+                operand_role(field.data_type()),
+                Unsupported | Date | Timestamp | Time
+            )
+    });
+    refused.then(|| {
+        let name = field.map_or_else(
+            || "UNKNOWN".to_string(),
+            |field| spark_field_type_name(&field),
+        );
+        PlanError::analysis(format!(
+            "cannot resolve arithmetic unary '{op}' with operand type {name}"
+        ))
+    })
+}
+
 fn arithmetic_operand_error(op: &str, left: &DataType, right: &DataType) -> PlanError {
     PlanError::analysis(format!(
         "cannot resolve arithmetic '{op}' with operand types {} and {}",

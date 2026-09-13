@@ -9,7 +9,6 @@ from pandas.testing import assert_frame_equal
 from pyspark.errors import AnalysisException
 from pyspark.sql import Row
 
-from pysail.testing.spark.utils.common import is_jvm_spark
 from pysail.testing.spark.utils.files import get_data_directory_size
 from pysail.testing.spark.utils.sql import escape_sql_identifier, escape_sql_string_literal
 
@@ -739,18 +738,13 @@ def test_parquet_arithmetic_operand_rejection(spark, tmp_path):
 
     # Spark reads UINT_32 as BIGINT and UINT_64 as DECIMAL(20,0), and `DateAdd` takes only a
     # BYTE, SHORT or INT offset (`datetimeExpressions.scala:331-332`, and it is
-    # `ExpectsInputTypes`), so it rejects both. Sail reads UINT_32 as INT and accepts every
-    # integral offset -- see `is_date_offset_numeric` -- because it still types `regexp_count`
-    # and `regexp_instr` as BIGINT where Spark types them INT, and narrowing the offset rule
-    # would refuse `DATE + regexp_count(...)`, a query Spark answers. The naming divergence is
-    # pinned in `test_parquet_uint32_date_offset_is_named_bigint`, so here the engines part ways
-    # on `u32`.
-    accepted = ["u8", "u16"] if is_jvm_spark() else ["u8", "u16", "u32"]
-    for column in accepted:
+    # `ExpectsInputTypes`), so it rejects both. Sail used to accept `u32` because its date offset
+    # rule was widened for functions it typed BIGINT; they carry Spark's INT now, the rule is
+    # `DateAdd`'s own, and the engines agree on every width.
+    for column in ["u8", "u16"]:
         query = f"SELECT DATE'2024-01-01' + {column} AS r FROM arithmetic_operands"  # noqa: S608
         assert spark.sql(query).collect() == [Row(r=date(2024, 1, 2))]
-    rejected = ["u32", "u64"] if is_jvm_spark() else ["u64"]
-    for column in rejected:
+    for column in ["u32", "u64"]:
         query = f"SELECT DATE'2024-01-01' + {column} AS r FROM arithmetic_operands"  # noqa: S608
         with pytest.raises(AnalysisException, match=r"(?i)cannot resolve"):
             spark.sql(query).collect()
@@ -786,16 +780,10 @@ def test_parquet_unsigned_operand_is_named_by_its_spark_type(spark, tmp_path, co
     assert f"BOOLEAN and {spark_type}" in str(excinfo.value).replace('"', "")
 
 
-@pytest.mark.xfail(
-    not is_jvm_spark(),
-    strict=True,
-    reason="Sail accepts every integral date offset, so a widened unsigned column is not rejected",
-)
 @pytest.mark.parametrize("op", ["+", "-"])
 def test_parquet_uint32_date_offset_is_named_bigint(spark, tmp_path, op):
-    # Spark reads a UINT_32 column as BIGINT, which `DateAdd` refuses. Sail reads it as INT and
-    # accepts it; pinned so the day `datediff` carries Spark's INT result type and the offset set
-    # narrows back, this says so.
+    # Spark reads a UINT_32 column as BIGINT, which `DateAdd` refuses, and names it BIGINT in the
+    # message.
     path = str(tmp_path / "uint32_offset.parquet")
     pq.write_table(pa.table({"u32": pa.array([1], pa.uint32())}), path)
     spark.read.parquet(path).createOrReplaceTempView("uint32_offset")

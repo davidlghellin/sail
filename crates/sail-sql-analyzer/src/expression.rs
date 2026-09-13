@@ -9,6 +9,7 @@ use sail_sql_parser::ast::expression::{
     WindowFrameBound, WindowModifier, WindowSpec, WithinGroupClause,
 };
 use sail_sql_parser::ast::identifier::{ObjectName, QualifiedWildcard};
+use sail_sql_parser::ast::literal::NumberLiteral;
 use sail_sql_parser::ast::query::{
     ClusterByClause, DistributeByClause, IdentList, NamedExpr, OrderByClause, PartitionByClause,
     SortByClause,
@@ -248,6 +249,24 @@ fn from_ast_window_frame_bound(bound: WindowFrameBound) -> SqlResult<spec::Windo
 pub fn from_ast_expression(expr: Expr) -> SqlResult<spec::Expr> {
     match expr {
         Expr::Atom(atom) => from_ast_atom_expression(atom),
+        // Spark's grammar folds a minus written right before a number INTO the literal
+        // (`number: MINUS? INTEGER_VALUE`, and likewise for every suffix), so the literal's type is
+        // chosen WITH its sign: `-2147483648` is an INT, `-128Y` is a valid TINYINT, and the column
+        // is named `-1`. Negating the unsigned literal instead typed `-2147483648` as a BIGINT, which
+        // is a date offset Spark accepts and Sail then refused, refused `-128Y` outright, and named
+        // the column `(- 1)`. A parenthesized number is `AtomExpr::Nested`, so `-(2147483648)` is not
+        // folded and stays a BIGINT negation, as in Spark.
+        Expr::UnaryOperator(UnaryOperator::Minus(_), expr)
+            if matches!(*expr, Expr::Atom(AtomExpr::NumberLiteral(_))) =>
+        {
+            let Expr::Atom(AtomExpr::NumberLiteral(literal)) = *expr else {
+                return Err(SqlError::invalid("expected a number literal"));
+            };
+            from_ast_number_literal(NumberLiteral {
+                value: format!("-{}", literal.value),
+                ..literal
+            })
+        }
         Expr::UnaryOperator(op, expr) => {
             Ok(spec::Expr::UnresolvedFunction(spec::UnresolvedFunction {
                 function_name: spec::ObjectName::bare(from_ast_unary_operator(op)?),

@@ -73,6 +73,22 @@ fn regexp_replace(string: expr::Expr, pattern: expr::Expr, replacement: expr::Ex
     }
 }
 
+/// `RegExpCount.dataType` is `IntegerType` (`regexpExpressions.scala:1106`) and DataFusion's
+/// `regexp_count` returns `Int64`. The width is not cosmetic: a BIGINT is a different arithmetic
+/// operand, and `DATE + regexp_count(...)` is a date offset only as an INT -- Spark's `DateAdd`
+/// refuses a BIGINT. A count of matches cannot leave `Int32`.
+fn regexp_count(input: ScalarFunctionInput) -> PlanResult<expr::Expr> {
+    let udf = ScalarUDF::from(RegexpCountFunc::new());
+    Ok(cast(udf.call(input.arguments), DataType::Int32))
+}
+
+/// `RegExpInStr.dataType` is `IntegerType` (`regexpExpressions.scala:1193`), for the same reason as
+/// [`regexp_count`]: a position in a string cannot leave `Int32`.
+fn regexp_instr(input: ScalarFunctionInput) -> PlanResult<expr::Expr> {
+    let udf = ScalarUDF::from(RegexpInstrFunc::new());
+    Ok(cast(udf.call(input.arguments), DataType::Int32))
+}
+
 fn regexp_substr(input: ScalarFunctionInput) -> PlanResult<expr::Expr> {
     let (string, pattern) = input
         .arguments
@@ -409,10 +425,10 @@ pub(super) fn list_built_in_string_functions() -> Vec<(&'static str, ScalarFunct
         ("printf", F::udf(FormatStringFunc::new())),
         ("quote", F::udf(SparkQuote::new())),
         ("randstr", F::udf(Randstr::new())),
-        ("regexp_count", F::udf(RegexpCountFunc::new())),
+        ("regexp_count", F::custom(regexp_count)),
         ("regexp_extract", F::udf(SparkRegexpExtract::new())),
         ("regexp_extract_all", F::udf(SparkRegexpExtractAll::new())),
-        ("regexp_instr", F::udf(RegexpInstrFunc::new())),
+        ("regexp_instr", F::custom(regexp_instr)),
         ("regexp_replace", F::ternary(regexp_replace)),
         ("regexp_substr", F::custom(regexp_substr)),
         ("repeat", F::binary(expr_fn::repeat)),
