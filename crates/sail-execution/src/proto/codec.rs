@@ -80,7 +80,6 @@ use datafusion_spark::function::datetime::make_dt_interval::SparkMakeDtInterval;
 use datafusion_spark::function::datetime::make_interval::SparkMakeInterval;
 use datafusion_spark::function::hash::crc32::SparkCrc32;
 use datafusion_spark::function::hash::sha1::SparkSha1;
-use datafusion_spark::function::hash::xxhash64::SparkXxhash64;
 use datafusion_spark::function::json::json_tuple::JsonTuple;
 use datafusion_spark::function::map::map_from_arrays::MapFromArrays;
 use datafusion_spark::function::map::map_from_entries::MapFromEntries;
@@ -198,6 +197,7 @@ use sail_function::scalar::geo::st_asbinary::StAsBinary;
 use sail_function::scalar::geo::st_geogfromwkb::StGeogFromWKB;
 use sail_function::scalar::geo::st_geomfromwkb::StGeomFromWKB;
 use sail_function::scalar::hash::spark_murmur3_hash::SparkMurmur3Hash;
+use sail_function::scalar::hash::spark_xxhash64::SparkXxhash64;
 use sail_function::scalar::json::{JsonObjectKeys, SparkFromJson, SparkSchemaOfJson, SparkToJson};
 use sail_function::scalar::map::map_entries::SparkMapEntries;
 use sail_function::scalar::map::map_from::{SparkMapFromArrays, SparkMapFromEntries};
@@ -3433,6 +3433,12 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
                 let udf = SparkUnixTimestamp::new(Arc::from(session_timezone), ansi_mode);
                 return Ok(Arc::new(ScalarUDF::from(udf)));
             }
+            UdfKind::SparkXxhash64(r#gen::SparkXxhash64Udf {
+                allow_hash_on_map_type,
+            }) => {
+                let udf = SparkXxhash64::new(allow_hash_on_map_type);
+                return Ok(Arc::new(ScalarUDF::from(udf)));
+            }
             UdfKind::SparkSequence(r#gen::SparkSequenceUdf {
                 session_timezone,
                 ansi_mode,
@@ -3644,7 +3650,6 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
             "spark_unhex" | "unhex" => Ok(Arc::new(ScalarUDF::from(SparkUnHex::new()))),
             "spark_murmur3_hash" | "hash" => Ok(Arc::new(ScalarUDF::from(SparkMurmur3Hash::new()))),
             "spark_reverse" | "reverse" => Ok(Arc::new(ScalarUDF::from(SparkReverse::new()))),
-            "spark_xxhash64" | "xxhash64" => Ok(Arc::new(ScalarUDF::from(SparkXxhash64::new()))),
             "hll_sketch_estimate" => {
                 Ok(Arc::new(ScalarUDF::from(HllSketchEstimateFunction::new())))
             }
@@ -3922,7 +3927,6 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
             || node_inner.is::<SparkVariantToJsonUdf>()
             || node_inner.is::<SparkVersion>()
             || node_inner.is::<SparkWidthBucket>()
-            || node_inner.is::<SparkXxhash64>()
             || node_inner.is::<SparkYearMonthInterval>()
             || node_inner.is::<YearMonthIntervalMonths>()
             || node_inner.is::<SparkToJson>()
@@ -4012,6 +4016,11 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
             UdfKind::SparkUnixTimestamp(r#gen::SparkUnixTimestampUdf {
                 session_timezone,
                 ansi_mode,
+            })
+        } else if let Some(func) = node.inner().downcast_ref::<SparkXxhash64>() {
+            let allow_hash_on_map_type = func.allow_hash_on_map_type();
+            UdfKind::SparkXxhash64(r#gen::SparkXxhash64Udf {
+                allow_hash_on_map_type,
             })
         } else if let Some(func) = node.inner().downcast_ref::<SparkSequence>() {
             let session_timezone = func.session_timezone().to_string();

@@ -394,6 +394,14 @@ impl TryFrom<&SparkRuntimeConfig> for PlanConfig {
         }
 
         if let Some(value) = config
+            .get_option(SparkConfigKey::SPARK_SQL_LEGACY_ALLOW_HASH_ON_MAP_TYPE)
+            .map(|x| x.trim().to_lowercase().parse::<bool>())
+            .transpose()?
+        {
+            output.legacy_allow_hash_on_map_type = value;
+        }
+
+        if let Some(value) = config
             .get_option(SparkConfigKey::SPARK_SQL_LEGACY_SIZE_OF_NULL)
             .map(|x| x.trim().to_lowercase().parse::<bool>())
             .transpose()?

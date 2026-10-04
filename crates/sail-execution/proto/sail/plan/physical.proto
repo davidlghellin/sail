@@ -265,6 +265,7 @@ message ExtendedScalarUdf {
     SparkMapFromEntriesUdf spark_map_from_entries = 37;
     StrToMapUdf str_to_map = 38;
     SparkSequenceUdf spark_sequence = 39;
+    SparkXxhash64Udf spark_xxhash64 = 40;
   }
 }
 
@@ -350,6 +351,10 @@ message SparkUnixTimestampUdf {
 message SparkSequenceUdf {
   string session_timezone = 1;
   bool ansi_mode = 2;
+}
+
+message SparkXxhash64Udf {
+  bool allow_hash_on_map_type = 1;
 }
 
 message SparkDateFormatUdf {

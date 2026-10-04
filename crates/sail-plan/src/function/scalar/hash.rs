@@ -4,10 +4,10 @@ use datafusion::functions::expr_fn;
 use datafusion_common::ScalarValue;
 use datafusion_expr::{ScalarUDF, expr};
 use datafusion_spark::function::hash::expr_fn as hash_fn;
-use datafusion_spark::function::hash::xxhash64::SparkXxhash64;
 use datafusion_spark::function::math::hex::SparkHex;
 use sail_common_datafusion::utils::items::ItemTaker;
 use sail_function::scalar::hash::spark_murmur3_hash::SparkMurmur3Hash;
+use sail_function::scalar::hash::spark_xxhash64::SparkXxhash64;
 
 use crate::error::PlanResult;
 use crate::function::common::{ScalarFunction, ScalarFunctionInput};
@@ -34,6 +34,18 @@ fn sha2(input: ScalarFunctionInput) -> PlanResult<expr::Expr> {
     Ok(expr_fn::lower(hex))
 }
 
+fn xxhash64(input: ScalarFunctionInput) -> PlanResult<expr::Expr> {
+    let ScalarFunctionInput {
+        arguments,
+        function_context,
+    } = input;
+    let allow_hash_on_map_type = function_context.plan_config.legacy_allow_hash_on_map_type;
+    Ok(expr::Expr::ScalarFunction(expr::ScalarFunction {
+        func: Arc::new(ScalarUDF::from(SparkXxhash64::new(allow_hash_on_map_type))),
+        args: arguments,
+    }))
+}
+
 pub(super) fn list_built_in_hash_functions() -> Vec<(&'static str, ScalarFunction)> {
     use crate::function::common::ScalarFunctionBuilder as F;
 
@@ -44,6 +56,6 @@ pub(super) fn list_built_in_hash_functions() -> Vec<(&'static str, ScalarFunctio
         ("sha", F::unary(hash_fn::sha1)),
         ("sha1", F::unary(hash_fn::sha1)),
         ("sha2", F::custom(sha2)),
-        ("xxhash64", F::udf(SparkXxhash64::new())),
+        ("xxhash64", F::custom(xxhash64)),
     ]
 }
